@@ -1,69 +1,57 @@
-## Prefer cross-toolchain; fall back to system toolchain if missing
-ifneq (,$(shell command -v x86_64-elf-gcc 2>/dev/null))
-CC := x86_64-elf-gcc
-else
-CC := gcc
-endif
+CC=gcc
+AS=as
+GCCPARAMS = -m32 -nostdlib -fno-builtin -fno-exceptions -ffreestanding -fno-leading-underscore -Wall -Wextra -Wpedantic
+ASPARAMS = --32
+LDPARAMS = -melf_i386
 
-ifneq (,$(shell command -v x86_64-elf-ld 2>/dev/null))
-LD := x86_64-elf-ld
-else
-# prefer ld if available, otherwise use gcc as the linker driver
-ifneq (,$(shell command -v ld 2>/dev/null))
-LD := ld
-else
-LD := $(CC)
-endif
-endif
+SRC_DIR=src
+HDR_DIR=include/
+OBJ_DIR=obj
+ISO_DIR=iso
 
-# Common flags
-CFLAGS := -I src/intf -ffreestanding -m64 -O2 -Wall -Wextra
-LDFLAGS := -T targets/x86_64/linker.ld
+SRC_FILES1=$(wildcard $(SRC_DIR)/*.c)
+OBJ_FILES1=$(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRC_FILES1))
+SRC_FILES2=$(wildcard $(SRC_DIR)/*.s)
+OBJ_FILES2=$(patsubst $(SRC_DIR)/%.s, $(OBJ_DIR)/%.o, $(SRC_FILES2))
+SRC_FILES3=$(wildcard $(SRC_DIR)/*.asm)
+OBJ_FILES3=$(patsubst $(SRC_DIR)/%.asm, $(OBJ_DIR)/%.o, $(SRC_FILES3))
 
-# Source discovery (silence errors if directories don't exist)
-kernel_source_files := $(shell find src/impl/kernel -type f -name '*.c' 2>/dev/null)
-kernel_object_files := $(patsubst src/impl/kernel/%.c, build/kernel/%.o, $(kernel_source_files))
-
-x86_64_c_source_files := $(shell find src/impl/x86_64 -type f -name '*.c' 2>/dev/null)
-x86_64_c_object_files := $(patsubst src/impl/x86_64/%.c, build/x86_64/%.o, $(x86_64_c_source_files))
-
-x86_64_asm_source_files := $(shell find src/impl/x86_64 -type f -name '*.asm' 2>/dev/null)
-x86_64_asm_object_files := $(patsubst src/impl/x86_64/%.asm, build/x86_64/%.o, $(x86_64_asm_source_files))
-
-x86_64_object_files := $(x86_64_c_object_files) $(x86_64_asm_object_files)
-
-build/kernel/%.o: src/impl/kernel/%.c
-	mkdir -p $(dir $@)
-	$(CC) -c $(CFLAGS) $(patsubst build/kernel/%.o, src/impl/kernel/%.c, $@) -o $@
-
-build/x86_64/%.o: src/impl/x86_64/%.c
-	mkdir -p $(dir $@)
-	$(CC) -c $(CFLAGS) $(patsubst build/x86_64/%.o, src/impl/x86_64/%.c, $@) -o $@
-
-build/x86_64/%.o: src/impl/x86_64/%.asm
-	mkdir -p $(dir $@)
-	nasm -f elf64 $(patsubst build/x86_64/%.o, src/impl/x86_64/%.asm, $@) -o $@
-
-.PHONY: build-x86_64
-
-build-x86_64: $(kernel_object_files) $(x86_64_object_files)
-	mkdir -p dist/x86_64
-	# Link using detected linker and flags. Use a shell conditional at recipe time.
-	if [ "$(LD)" = "ld" ]; then \
-		$(LD) -n $(LDFLAGS) -o dist/x86_64/kernel.bin $(kernel_object_files) $(x86_64_object_files); \
-	else \
-		$(LD) $(LDFLAGS) -o dist/x86_64/kernel.bin $(kernel_object_files) $(x86_64_object_files); \
+check_dir:
+	if [ ! -d "$(OBJ_DIR)" ]; then \
+		mkdir -p $(OBJ_DIR); \
 	fi
-	cp dist/x86_64/kernel.bin targets/x86_64/iso/boot/kernel.bin
-	# Call grub-mkrescue with a module directory if present, otherwise fallback to the default
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	mkdir -p $(dir $@)
+	$(CC) $(GCCPARAMS) $^ -I$(HDR_DIR) -c -o $@
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.s
+	mkdir -p $(dir $@)
+	$(AS) $(ASPARAMS) -o $@ $<
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.asm
+	mkdir -p $(dir $@)
+	nasm -f elf32 -o $@ $<
+
+my-os.bin: $(SRC_DIR)/linker.ld $(OBJ_FILES1) $(OBJ_FILES2) $(OBJ_FILES3)
+	ld $(LDPARAMS) -T $< -o $@ $(OBJ_DIR)/*.o
+
+my-os.iso: my-os.bin
+	@if [ -x ./update_version ]; then ./update_version; else echo "(skipping update_version)"; fi
+	mkdir -p iso/boot/grub
+	cp my-os.bin iso/boot/my-os.bin
+	printf '%s\n' 'set timeout=0' 'set default=0' '' 'menuentry "My-OS" {' '  multiboot /boot/my-os.bin' '  boot' '}' > iso/boot/grub/grub.cfg
+	# Try to provide grub modules dir if present (common locations)
 	if [ -d /usr/lib/grub/i386-pc ]; then \
-		grub-mkrescue -d /usr/lib/grub/i386-pc -o dist/x86_64/kernel.iso targets/x86_64/iso; \
+		grub-mkrescue -d /usr/lib/grub/i386-pc --output=my-os.iso iso; \
 	elif [ -d /usr/lib/grub2/i386-pc ]; then \
-		grub-mkrescue -d /usr/lib/grub2/i386-pc -o dist/x86_64/kernel.iso targets/x86_64/iso; \
+		grub-mkrescue -d /usr/lib/grub2/i386-pc --output=my-os.iso iso; \
 	else \
-		grub-mkrescue -o dist/x86_64/kernel.iso targets/x86_64/iso; \
+		grub-mkrescue --output=my-os.iso iso || echo "grub-mkrescue failed: ensure grub modules and xorriso are installed"; \
 	fi
+	rm -rf iso
+install: my-os.bin
+	sudo cp $< /boot/my-os.bin
 
-.PHONY: clean
 clean:
-	rm -rf build dist
+	rm -rf $(OBJ_DIR) my-os.bin my-os.iso iso
