@@ -119,7 +119,6 @@ void term_putc(char c, enum vga_color char_color)
     unsigned int j = 0; // place holder for video buffer position
 
     int index;
-    // Remember - we don't want to display ALL characters!
     switch (c)
     {
     case '\n': // Newline characters should return the column to 0, and increment the row
