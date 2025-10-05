@@ -12,7 +12,7 @@ Requirements:-
 
 
 Make Iso file:
-bash ./run.sh
+    make build-x86_64
 
 
 Run ISO file:
