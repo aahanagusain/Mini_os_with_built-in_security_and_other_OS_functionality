@@ -22,35 +22,36 @@ check_dir:
 	fi
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c
+	mkdir -p $(dir $@)
 	$(CC) $(GCCPARAMS) $^ -I$(HDR_DIR) -c -o $@
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.s
+	mkdir -p $(dir $@)
 	$(AS) $(ASPARAMS) -o $@ $<
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.asm
+	mkdir -p $(dir $@)
 	nasm -f elf32 -o $@ $<
 
-primus-os.bin: $(SRC_DIR)/linker.ld $(OBJ_FILES1) $(OBJ_FILES2) $(OBJ_FILES3)
+my-os.bin: $(SRC_DIR)/linker.ld $(OBJ_FILES1) $(OBJ_FILES2) $(OBJ_FILES3)
 	ld $(LDPARAMS) -T $< -o $@ $(OBJ_DIR)/*.o
 
-primus-os.iso: primus-os.bin
-	./update_version
-	mkdir iso
-	mkdir iso/boot
-	mkdir iso/boot/grub
-	cp primus-os.bin iso/boot/primus-os.bin
-	echo 'set timeout=0'                      > iso/boot/grub/grub.cfg
-	echo 'set default=0'                     >> iso/boot/grub/grub.cfg
-	echo ''                                  >> iso/boot/grub/grub.cfg
-	echo 'menuentry "PrimusOS" {'            >> iso/boot/grub/grub.cfg
-	echo '  multiboot /boot/primus-os.bin'   >> iso/boot/grub/grub.cfg
-	echo '  boot'                            >> iso/boot/grub/grub.cfg
-	echo '}'                                 >> iso/boot/grub/grub.cfg
-	grub-mkrescue --output=primus-os.iso iso
+my-os.iso: my-os.bin
+	@if [ -x ./update_version ]; then ./update_version; else echo "(skipping update_version)"; fi
+	mkdir -p iso/boot/grub
+	cp my-os.bin iso/boot/my-os.bin
+	printf '%s\n' 'set timeout=0' 'set default=0' '' 'menuentry "My-OS" {' '  multiboot /boot/my-os.bin' '  boot' '}' > iso/boot/grub/grub.cfg
+	# Try to provide grub modules dir if present (common locations)
+	if [ -d /usr/lib/grub/i386-pc ]; then \
+		grub-mkrescue -d /usr/lib/grub/i386-pc --output=my-os.iso iso; \
+	elif [ -d /usr/lib/grub2/i386-pc ]; then \
+		grub-mkrescue -d /usr/lib/grub2/i386-pc --output=my-os.iso iso; \
+	else \
+		grub-mkrescue --output=my-os.iso iso || echo "grub-mkrescue failed: ensure grub modules and xorriso are installed"; \
+	fi
 	rm -rf iso
-
-install: primus-os.bin
-	sudo cp $< /boot/primus-os.bin
+install: my-os.bin
+	sudo cp $< /boot/my-os.bin
 
 clean:
-	rm -rf *.o primus-os primus-os.iso primus-os.bin $(OBJ_DIR)/*.o iso	
+	rm -rf $(OBJ_DIR) my-os.bin my-os.iso iso

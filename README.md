@@ -12,8 +12,12 @@ Requirements:-
 
 
 Make Iso file:
-bash ./run.sh
+    make my-os.iso
 
 
 Run ISO file:
-qemu-system-x86_64 -m 1024 -boot d -enable-kvm -smp 3 -net nic -net user -hda testing-image.img -cdrom RunDemo.iso   
+
+
+
+references:
+ https://developer.download.nvidia.com/cg/index_stdlib.html
