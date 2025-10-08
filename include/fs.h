@@ -47,6 +47,19 @@ int fs_stat(const char *path, struct fs_stat *st);
  * listing contents; it is intentionally minimal for Phase 1. */
 int fs_readdir(unsigned int index, const struct fs_file **out);
 
+/* Phase 3: richer filesystem operations (hierarchical RAMFS overlay)
+ * - fs_listdir(path, index, out) enumerates entries inside a directory
+ * - fs_rename(oldpath, newpath) renames/moves a node
+ * - fs_truncate(path, size) truncates or extends a file
+ * - fs_rmdir(path) removes an empty directory
+ */
+int fs_listdir(const char *path, unsigned int index, const struct fs_file **out);
+int fs_rename(const char *oldpath, const char *newpath);
+int fs_truncate(const char *path, size_t size);
+int fs_rmdir(const char *path);
+/* Return 1 if path exists in the writable overlay, 0 otherwise */
+int fs_is_overlay(const char *path);
+
 /* Phase 2: writable in-memory file operations (simple ramfs overlay).
  * These are minimal helpers to create, write (append/overwrite), unlink
  * and create directories in a tiny dynamic ramfs that lives in kernel

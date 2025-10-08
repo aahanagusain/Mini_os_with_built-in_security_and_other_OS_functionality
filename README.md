@@ -16,7 +16,8 @@ Make Iso file:
 
 
 Run ISO file:
-    run iso in vmware 
+   - run iso in vmware 
+   - qemu-system-x86_64 -m 1024 -cdrom pegasus.iso -serial mon:stdio -no-reboot -machine accel=tcg -boot order=d
 
 
 references:
@@ -25,5 +26,5 @@ references:
  printf - https://cplusplus.com/reference/cstdio/printf/
  puts - https://cplusplus.com/reference/cstdio/puts/
  stdio library - https://cplusplus.com/reference/cstdio/
-
+https://lass.cs.umass.edu/~shenoy/courses/spring20/lectures/Lec18.pdf
 

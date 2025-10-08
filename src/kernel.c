@@ -149,7 +149,11 @@ int main(void)
 					unsigned int idx = 0;
 					int found = 0;
 					while (fs_readdir(idx, &f) == FS_OK) {
-						printk("\n\t%s\t%u bytes", f->name, (unsigned)f->size);
+						/* annotate overlay files created at runtime */
+						if (fs_is_overlay(f->name))
+							printk("\n\t%s\t%u bytes\t(overlay)", f->name, (unsigned)f->size);
+						else
+							printk("\n\t%s\t%u bytes", f->name, (unsigned)f->size);
 						idx++;
 						found = 1;
 					}
@@ -375,6 +379,71 @@ int main(void)
 				memset(buffer, 0, BUFFER_SIZE);
 				strcpy(&buffer[strlen(buffer)], "");
 				break;
+			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "mv ", 3) == 0)
+			{
+				char *p = buffer + 3;
+				while (*p == ' ') p++;
+				if (*p == '\0') {
+					printk("\nUsage: mv <oldpath> <newpath>\n");
+				} else {
+					char *q = strchr(p, ' ');
+					if (!q) {
+						printk("\nUsage: mv <oldpath> <newpath>\n");
+					} else {
+						*q = '\0';
+						char *old = p;
+						char *new = q + 1;
+						while (*new == ' ') new++;
+						if (*new == '\0') {
+							printk("\nUsage: mv <oldpath> <newpath>\n");
+						} else {
+							int r = fs_rename(old, new);
+							if (r == FS_OK) printk("\n(mv) renamed %s -> %s\n", old, new);
+							else printk("\n(mv) failed: %d\n", r);
+						}
+					}
+				}
+			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "truncate ", 9) == 0)
+			{
+				char *p = buffer + 9;
+				while (*p == ' ') p++;
+				if (*p == '\0') {
+					printk("\nUsage: truncate <path> <size>\n");
+				} else {
+					char *q = strchr(p, ' ');
+					if (!q) {
+						printk("\nUsage: truncate <path> <size>\n");
+					} else {
+						*q = '\0';
+						char *path = p;
+						char *num = q + 1;
+						while (*num == ' ') num++;
+						if (*num == '\0') { printk("\nUsage: truncate <path> <size>\n"); }
+						else {
+							int val = 0; int neg = 0;
+							if (*num == '-') { neg = 1; num++; }
+							while (*num >= '0' && *num <= '9') { val = val * 10 + (*num - '0'); num++; }
+							if (neg) val = -val;
+							int r = fs_truncate(path, (size_t)val);
+							if (r == FS_OK) printk("\n(truncate) %s => %d\n", path, val);
+							else printk("\n(truncate) failed: %d\n", r);
+						}
+					}
+				}
+			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "rmdir ", 6) == 0)
+			{
+				const char *path = buffer + 6;
+				while (*path == ' ') path++;
+				if (*path == '\0') {
+					printk("\nUsage: rmdir <path>\n");
+				} else {
+					int r = fs_rmdir(path);
+					if (r == FS_OK) printk("\n(rmdir) removed %s\n", path);
+					else printk("\n(rmdir) failed: %d\n", r);
+				}
 			}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "cat ", 4) == 0)
 				{

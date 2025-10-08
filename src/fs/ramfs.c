@@ -251,3 +251,105 @@ int fs_readdir(unsigned int index, const struct fs_file **out)
     }
     return FS_ENOENT;
 }
+
+/* Phase 3: list directory entries under `path`. Index enumerates entries.
+ * We implement this by scanning overlay for names that start with path + '/'
+ * and returning the Nth matching entry (non-recursive single path component).
+ */
+int fs_listdir(const char *path, unsigned int index, const struct fs_file **out)
+{
+    size_t plen = strlen(path);
+    unsigned int found = 0;
+    static struct fs_file temp;
+
+    /* normalize root */
+    int root = (plen == 0 || (plen == 1 && path[0] == '/'));
+
+    for (int i = 0; i < OVERLAY_MAX_FILES; ++i) {
+        if (!overlay[i].used) continue;
+        const char *name = overlay[i].name;
+        /* skip if not under path */
+        if (!root) {
+            if (strncmp(name, path, plen) != 0) continue;
+            if (name[plen] != '/') continue; /* not an immediate child */
+            /* child name starts at name+plen+1 until next '/' or '\0' */
+        } else {
+            /* root: immediate children are those without additional '/' besides leading */
+            if (name[0] != '/') continue;
+        }
+        if (found == index) {
+            temp.name = overlay[i].name;
+            temp.data = overlay[i].data;
+            temp.size = overlay[i].size;
+            if (out) *out = &temp;
+            return FS_OK;
+        }
+        found++;
+    }
+    return FS_ENOENT;
+}
+
+int fs_rename(const char *oldpath, const char *newpath)
+{
+    int oi = overlay_find(oldpath);
+    if (oi < 0) return FS_ENOENT;
+    /* ensure no existing destination */
+    int di = overlay_find(newpath);
+    if (di >= 0) return FS_EINVAL;
+    /* rename by replacing name string */
+    char *newname = kstrdup(newpath);
+    if (!newname) return FS_EIO;
+    kfree(overlay[oi].name);
+    overlay[oi].name = newname;
+    return FS_OK;
+}
+
+int fs_truncate(const char *path, size_t size)
+{
+    int oi = overlay_find(path);
+    if (oi < 0) return FS_ENOENT;
+    if (size == overlay[oi].size) return FS_OK;
+    if (size == 0) {
+        kfree(overlay[oi].data);
+        overlay[oi].data = NULL;
+        overlay[oi].size = 0;
+        return FS_OK;
+    }
+    uint8_t *n = krealloc(overlay[oi].data, overlay[oi].size, size);
+    if (!n) return FS_EIO;
+    /* If extended, zero the new region */
+    if (size > overlay[oi].size) {
+        memset(n + overlay[oi].size, 0, size - overlay[oi].size);
+    }
+    overlay[oi].data = n;
+    overlay[oi].size = size;
+    return FS_OK;
+}
+
+int fs_rmdir(const char *path)
+{
+    /* Only allow removal if no entries have this path as prefix */
+    size_t plen = strlen(path);
+    for (int i = 0; i < OVERLAY_MAX_FILES; ++i) {
+        if (!overlay[i].used) continue;
+        if (strncmp(overlay[i].name, path, plen) == 0) {
+            /* if exact match and is_dir -> ok, else if child exists -> fail */
+            if (overlay[i].name[plen] == '\0' && overlay[i].is_dir) {
+                /* remove this dir entry only if no child exists */
+                /* check for children */
+                for (int j = 0; j < OVERLAY_MAX_FILES; ++j) {
+                    if (!overlay[j].used || j == i) continue;
+                    if (strncmp(overlay[j].name, path, plen) == 0 && overlay[j].name[plen] == '/') return FS_EINVAL;
+                }
+                overlay_free(i);
+                return FS_OK;
+            }
+        }
+    }
+    return FS_ENOENT;
+}
+
+int fs_is_overlay(const char *path)
+{
+    return overlay_find(path) >= 0;
+}
