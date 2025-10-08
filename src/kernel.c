@@ -234,6 +234,96 @@ int main(void)
 				{
 					about(current_version);
 				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "touch ", 6) == 0)
+				{
+					const char *path = buffer + 6;
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: touch <path>\n");
+					} else {
+						int r = fs_create(path, NULL, 0);
+						if (r == FS_OK) printk("\n(touch) created %s\n", path);
+						else printk("\n(touch) failed: %d\n", r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "mkdir ", 6) == 0)
+				{
+					const char *path = buffer + 6;
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: mkdir <path>\n");
+					} else {
+						int r = fs_mkdir(path);
+						if (r == FS_OK) printk("\n(mkdir) created %s\n", path);
+						else printk("\n(mkdir) failed: %d\n", r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "rm ", 3) == 0)
+				{
+					const char *path = buffer + 3;
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: rm <path>\n");
+					} else {
+						int r = fs_unlink(path);
+						if (r == FS_OK) printk("\n(rm) removed %s\n", path);
+						else printk("\n(rm) failed: %d\n", r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "write ", 6) == 0)
+				{
+					char *p = buffer + 6;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: write <path> <text>\n");
+					} else {
+						char *q = strchr(p, ' ');
+						if (!q) {
+							printk("\nUsage: write <path> <text>\n");
+						} else {
+							*q = '\0';
+							char *text = q + 1;
+							while (*text == ' ') text++;
+							size_t tlen = strlen(text);
+							/* Try to open the file */
+							fs_fd_t fd = fs_open(p, FS_O_RDONLY);
+							if (fd < 0) {
+								/* not present: create empty overlay file first */
+								int c = fs_create(p, (const uint8_t *)"", 0);
+								if (c != FS_OK) { printk("\n(write) create failed: %d\n", c); continue; }
+								fd = fs_open(p, FS_O_RDONLY);
+								if (fd < 0) { printk("\n(write) open failed after create: %d\n", fd); continue; }
+							}
+							/* Attempt to write (fs_write will fail with FS_EIO if the fd refers to a read-only packaged file) */
+							int w = fs_write(fd, (const void *)text, tlen);
+							if (w == FS_EIO) {
+								/* packaged file: copy contents into overlay then retry */
+								fs_close(fd);
+								struct fs_stat st;
+								if (fs_stat(p, &st) == FS_OK && st.size > 0) {
+									char *buf = kmalloc(st.size);
+									if (buf) {
+										fs_fd_t rfd = fs_open(p, FS_O_RDONLY);
+										if (rfd >= 0) {
+											int got = fs_read(rfd, buf, st.size);
+											fs_close(rfd);
+											/* create overlay copy */
+											fs_create(p, (const uint8_t *)buf, (size_t)got);
+											fd = fs_open(p, FS_O_RDONLY);
+											if (fd >= 0) {
+												w = fs_write(fd, (const void *)text, tlen);
+											}
+										}
+										kfree(buf);
+									}
+								}
+							}
+							if (w >= 0) printk("\n(write) wrote %d bytes to %s\n", w, p);
+							else printk("\n(write) failed: %d\n", w);
+							if (fd >= 0) fs_close(fd);
+						}
+					}
+				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "fontcolor") == 0)
 				{
 					default_font_color = change_font_color();

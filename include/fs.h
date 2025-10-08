@@ -47,6 +47,16 @@ int fs_stat(const char *path, struct fs_stat *st);
  * listing contents; it is intentionally minimal for Phase 1. */
 int fs_readdir(unsigned int index, const struct fs_file **out);
 
+/* Phase 2: writable in-memory file operations (simple ramfs overlay).
+ * These are minimal helpers to create, write (append/overwrite), unlink
+ * and create directories in a tiny dynamic ramfs that lives in kernel
+ * memory. These do not persist across reboots.
+ */
+int fs_create(const char *path, const uint8_t *data, size_t size);
+int fs_write(fs_fd_t fd, const void *buf, size_t count); /* append/write to an open fd */
+int fs_unlink(const char *path);
+int fs_mkdir(const char *path);
+
 #ifdef __cplusplus
 }
 #endif
