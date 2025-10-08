@@ -15,4 +15,7 @@ uint32_t current_day();
 uint32_t current_month();
 uint32_t current_year();
 
+/* Build-time string generated at make time */
+const char *get_build_time(void);
+
 #endif

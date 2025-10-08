@@ -16,8 +16,14 @@ Make Iso file:
 
 
 Run ISO file:
-
+    run iso in vmware 
 
 
 references:
- https://developer.download.nvidia.com/cg/index_stdlib.html
+ mathematical functions - https://developer.download.nvidia.com/cg/index_stdlib.html
+ https://en.wikipedia.org/wiki/X86_calling_conventions
+ printf - https://cplusplus.com/reference/cstdio/printf/
+ puts - https://cplusplus.com/reference/cstdio/puts/
+ stdio library - https://cplusplus.com/reference/cstdio/
+
+
