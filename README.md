@@ -12,7 +12,7 @@ Requirements:-
 
 
 Make Iso file:
-    make my-os.iso
+    make pegasus.iso
 
 
 Run ISO file:
