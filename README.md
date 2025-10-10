@@ -16,8 +16,15 @@ Make Iso file:
 
 
 Run ISO file:
-
+   - run iso in vmware 
+   - qemu-system-x86_64 -m 1024 -cdrom pegasus.iso -serial mon:stdio -no-reboot -machine accel=tcg -boot order=d
 
 
 references:
- https://developer.download.nvidia.com/cg/index_stdlib.html
+ mathematical functions - https://developer.download.nvidia.com/cg/index_stdlib.html
+ https://en.wikipedia.org/wiki/X86_calling_conventions
+ printf - https://cplusplus.com/reference/cstdio/printf/
+ puts - https://cplusplus.com/reference/cstdio/puts/
+ stdio library - https://cplusplus.com/reference/cstdio/
+https://lass.cs.umass.edu/~shenoy/courses/spring20/lectures/Lec18.pdf
+

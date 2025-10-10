@@ -10,12 +10,12 @@
 #include "../include/sha224.h"
 #include "../include/sha256.h"
 #include "../include/utils.h"
-#include "../include/easter.h"
 #include "../include/sleep.h"
 #include "../include/thread.h"
 #include "../include/memory.h"
 #include "../include/shell_history.h"
 #include "../include/calculator.h"
+#include "../include/fs.h"
 
 #define DEBUG false
 
@@ -26,6 +26,48 @@ uint8_t capslock = false;
 uint8_t scrolllock = false;
 uint8_t shift = false;
 char current_version[7];
+
+/* Pager: wait for pager key. Return 1 to continue, 0 to quit */
+/* forward declaration for blocking getchar used by pager */
+static char getch_blocking(void);
+
+static int pager_wait_key(void)
+{
+	char c = getch_blocking();
+	if (c == 'q' || c == 'Q') return 0;
+	if (c == ' ' || c == '\n' || c == '\r') return 1;
+	return 1; /* any other key continues */
+}
+
+/* Blocking getchar: waits for a keypress, handles shift and capslock toggles,
+   and returns the mapped character (or 0 for non-printable control keys). */
+static char getch_blocking(void)
+{
+	uint8_t b = 0;
+	while (1) {
+		while ((b = scan()) == 0) ;
+
+		/* handle toggles */
+		if (togglecode[b] == CAPSLOCK) {
+			capslock = !capslock;
+			continue; /* no character to return */
+		}
+		/* shift press (make code) - set shift and wait for next key */
+		if (b == 0x2A || b == 0x36) {
+			shift = true;
+			continue;
+		}
+
+		char ch;
+		if (capslock) ch = capslockmap[b];
+		else if (shift) { ch = shiftmap[b]; shift = false; }
+		else ch = normalmap[b];
+
+		/* If mapping yields special key constants (like KEY_UP), return 0 */
+		if ((unsigned char)ch >= 0xE0) return 0;
+		return ch;
+	}
+}
 
 int main(void)
 {
@@ -49,6 +91,22 @@ int main(void)
 
 	// initialize heap
 	heap_init();
+
+	/* Mount embedded initrd (ramfs) and print a test file if present */
+	if (fs_mount_initrd_embedded() == FS_OK) {
+		fs_fd_t fd = fs_open("/README.txt", FS_O_RDONLY);
+		if (fd >= 0) {
+			char fbuf[256];
+			int r = fs_read(fd, fbuf, sizeof(fbuf) - 1);
+			if (r > 0) {
+				fbuf[r] = '\0';
+				printk("\n--- initrd /README.txt ---\n%s\n---\n", fbuf);
+			}
+			fs_close(fd);
+		} else {
+			printk("\n(initrd) /README.txt not found\n");
+		}
+	}
 
 #if DEBUG
 	// memory test
@@ -84,91 +142,26 @@ int main(void)
 			{
 				strcpy(buffer, tolower(buffer));
 				insert_at_head(&head, create_new_node(buffer));
-
-				if (strlen(buffer) > 0 && strcmp(buffer, "exit") == 0)
+				 if (strlen(buffer) > 0 && strcmp(buffer, "ls") == 0)
 				{
-					printk("\nGoodbye!");
+					/* list embedded initrd files */
+					const struct fs_file *f;
+					unsigned int idx = 0;
+					int found = 0;
+					while (fs_readdir(idx, &f) == FS_OK) {
+						/* annotate overlay files created at runtime */
+						if (fs_is_overlay(f->name))
+							printk("\n\t%s\t%u bytes\t(overlay)", f->name, (unsigned)f->size);
+						else
+							printk("\n\t%s\t%u bytes", f->name, (unsigned)f->size);
+						idx++;
+						found = 1;
+					}
+					if (!found) printk("\n\t(initrd) empty\n");
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "hello") == 0)
 				{
 					printk("\nHi!");
-				}
-				if (strlen(buffer) > 0 && strcmp(buffer, "why") == 0)
-				{
-					why();
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "fuck") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_RED, COLOR_BLACK);
-					printk("\nWatch your language scumbag. I'll shutdown when you least are expecting ;)");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "joke") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_BROWN, COLOR_BLACK);
-					printk("\nWhy are PHP developers rich? They see dollar signs all the time ... :D");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strcmp(buffer, "sing me a song") == 0)
-				{
-					terminal_set_colors(COLOR_LIGHT_BLUE, COLOR_BLACK);
-					printk("\n\tSing me a song, you're a singer\n\tDo me a wrong, you're a bringer of evil\n\tThe devil is never a maker\n\tThe less that you give, you're a taker\n\tSo it's on and on and on, it's Heaven and Hell\n\tOh well");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "sex") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_RED, COLOR_BLACK);
-					printk("\nAre you a creep? This message will be reported to my creator.");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "are you single") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_MAGENTA, COLOR_BLACK);
-					printk("\nAre you hitting on me?");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "do you like anime") != NULL)
-				{
-					printk("\nOf course!\n");
-					terminal_set_colors(COLOR_LIGHT_BROWN, COLOR_BLACK);
-					anime();
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "are you a boy or a girl") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_MAGENTA, COLOR_BLACK);
-					printk("\nI can be whatever you want ;)");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "are you autistic") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_CYAN, COLOR_BLACK);
-					printk("\nJust a little bit :)");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "what is your purpose") != NULL)
-				{
-					terminal_set_colors(COLOR_GREEN, COLOR_BLACK);
-					printk("\nI don't know yet. I guess I'll figure it out sooner or later ...");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "are you sentient") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_GREEN, COLOR_BLACK);
-					printk("\nNot yet! Maybe I'll become sentient one day? Who knows ...");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "taxation") != NULL)
-				{
-					terminal_set_colors(COLOR_LIGHT_BROWN, COLOR_BLACK);
-					printk("\nTaxation is theft!");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
-				}
-				else if (strlen(buffer) > 0 && strstr(buffer, "who created you") != NULL)
-				{
-					terminal_set_colors(COLOR_WHITE, COLOR_BLACK);
-					printk("\nA Brazilian developer whose name is Leonardo Araujo. Check out his GitHub:\nhttps://github.com/araujo88");
-					terminal_set_colors(default_font_color, COLOR_BLACK);
 				}
 				else if (strlen(buffer) > 0 && strstr(buffer, "sha256(") != NULL)
 				{
@@ -245,6 +238,96 @@ int main(void)
 				{
 					about(current_version);
 				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "touch ", 6) == 0)
+				{
+					const char *path = buffer + 6;
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: touch <path>\n");
+					} else {
+						int r = fs_create(path, NULL, 0);
+						if (r == FS_OK) printk("\n(touch) created %s\n", path);
+						else printk("\n(touch) failed: %d\n", r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "mkdir ", 6) == 0)
+				{
+					const char *path = buffer + 6;
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: mkdir <path>\n");
+					} else {
+						int r = fs_mkdir(path);
+						if (r == FS_OK) printk("\n(mkdir) created %s\n", path);
+						else printk("\n(mkdir) failed: %d\n", r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "rm ", 3) == 0)
+				{
+					const char *path = buffer + 3;
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: rm <path>\n");
+					} else {
+						int r = fs_unlink(path);
+						if (r == FS_OK) printk("\n(rm) removed %s\n", path);
+						else printk("\n(rm) failed: %d\n", r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "write ", 6) == 0)
+				{
+					char *p = buffer + 6;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: write <path> <text>\n");
+					} else {
+						char *q = strchr(p, ' ');
+						if (!q) {
+							printk("\nUsage: write <path> <text>\n");
+						} else {
+							*q = '\0';
+							char *text = q + 1;
+							while (*text == ' ') text++;
+							size_t tlen = strlen(text);
+							/* Try to open the file */
+							fs_fd_t fd = fs_open(p, FS_O_RDONLY);
+							if (fd < 0) {
+								/* not present: create empty overlay file first */
+								int c = fs_create(p, (const uint8_t *)"", 0);
+								if (c != FS_OK) { printk("\n(write) create failed: %d\n", c); continue; }
+								fd = fs_open(p, FS_O_RDONLY);
+								if (fd < 0) { printk("\n(write) open failed after create: %d\n", fd); continue; }
+							}
+							/* Attempt to write (fs_write will fail with FS_EIO if the fd refers to a read-only packaged file) */
+							int w = fs_write(fd, (const void *)text, tlen);
+							if (w == FS_EIO) {
+								/* packaged file: copy contents into overlay then retry */
+								fs_close(fd);
+								struct fs_stat st;
+								if (fs_stat(p, &st) == FS_OK && st.size > 0) {
+									char *buf = kmalloc(st.size);
+									if (buf) {
+										fs_fd_t rfd = fs_open(p, FS_O_RDONLY);
+										if (rfd >= 0) {
+											int got = fs_read(rfd, buf, st.size);
+											fs_close(rfd);
+											/* create overlay copy */
+											fs_create(p, (const uint8_t *)buf, (size_t)got);
+											fd = fs_open(p, FS_O_RDONLY);
+											if (fd >= 0) {
+												w = fs_write(fd, (const void *)text, tlen);
+											}
+										}
+										kfree(buf);
+									}
+								}
+							}
+							if (w >= 0) printk("\n(write) wrote %d bytes to %s\n", w, p);
+							else printk("\n(write) failed: %d\n", w);
+							if (fd >= 0) fs_close(fd);
+						}
+					}
+				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "fontcolor") == 0)
 				{
 					default_font_color = change_font_color();
@@ -297,6 +380,113 @@ int main(void)
 				strcpy(&buffer[strlen(buffer)], "");
 				break;
 			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "mv ", 3) == 0)
+			{
+				char *p = buffer + 3;
+				while (*p == ' ') p++;
+				if (*p == '\0') {
+					printk("\nUsage: mv <oldpath> <newpath>\n");
+				} else {
+					char *q = strchr(p, ' ');
+					if (!q) {
+						printk("\nUsage: mv <oldpath> <newpath>\n");
+					} else {
+						*q = '\0';
+						char *old = p;
+						char *new = q + 1;
+						while (*new == ' ') new++;
+						if (*new == '\0') {
+							printk("\nUsage: mv <oldpath> <newpath>\n");
+						} else {
+							int r = fs_rename(old, new);
+							if (r == FS_OK) printk("\n(mv) renamed %s -> %s\n", old, new);
+							else printk("\n(mv) failed: %d\n", r);
+						}
+					}
+				}
+			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "truncate ", 9) == 0)
+			{
+				char *p = buffer + 9;
+				while (*p == ' ') p++;
+				if (*p == '\0') {
+					printk("\nUsage: truncate <path> <size>\n");
+				} else {
+					char *q = strchr(p, ' ');
+					if (!q) {
+						printk("\nUsage: truncate <path> <size>\n");
+					} else {
+						*q = '\0';
+						char *path = p;
+						char *num = q + 1;
+						while (*num == ' ') num++;
+						if (*num == '\0') { printk("\nUsage: truncate <path> <size>\n"); }
+						else {
+							int val = 0; int neg = 0;
+							if (*num == '-') { neg = 1; num++; }
+							while (*num >= '0' && *num <= '9') { val = val * 10 + (*num - '0'); num++; }
+							if (neg) val = -val;
+							int r = fs_truncate(path, (size_t)val);
+							if (r == FS_OK) printk("\n(truncate) %s => %d\n", path, val);
+							else printk("\n(truncate) failed: %d\n", r);
+						}
+					}
+				}
+			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "rmdir ", 6) == 0)
+			{
+				const char *path = buffer + 6;
+				while (*path == ' ') path++;
+				if (*path == '\0') {
+					printk("\nUsage: rmdir <path>\n");
+				} else {
+					int r = fs_rmdir(path);
+					if (r == FS_OK) printk("\n(rmdir) removed %s\n", path);
+					else printk("\n(rmdir) failed: %d\n", r);
+				}
+			}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "cat ", 4) == 0)
+				{
+					/* cat <path> - print file contents from embedded initrd */
+					const char *path = buffer + 4;
+					/* trim leading spaces */
+					while (*path == ' ') path++;
+					if (*path == '\0') {
+						printk("\nUsage: cat <path>\n");
+					} else {
+						fs_fd_t fd = fs_open(path, FS_O_RDONLY);
+						if (fd < 0) {
+							printk("\n(cat) %s: not found\n", path);
+						} else {
+							char fbuf[256];
+							int r;
+							int line_count = 0;
+							while ((r = fs_read(fd, fbuf, sizeof(fbuf)-1)) > 0) {
+								fbuf[r] = '\0';
+								/* print and count newlines for pagination */
+								for (int i = 0; i < r; ++i) {
+									char ch = fbuf[i];
+									char s[2] = {ch, '\0'};
+									printk("%s", s);
+									if (ch == '\n') {
+										line_count++;
+										if (line_count >= 20) {
+											printk("--More-- (space to continue, q to quit)");
+											if (!pager_wait_key()) { r = -1; break; }
+											line_count = 0;
+											printk("\n");
+										}
+									}
+								}
+							}
+							if (r < 0) {
+								printk("\n(cat) read error or cancelled\n");
+							}
+							fs_close(fd);
+							printk("\n");
+						}
+					}
+				}
 			else if ((byte == BACKSPACE) && (strlen(buffer) == 0))
 			{
 			}
