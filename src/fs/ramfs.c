@@ -261,31 +261,156 @@ int fs_listdir(const char *path, unsigned int index, const struct fs_file **out)
     size_t plen = strlen(path);
     unsigned int found = 0;
     static struct fs_file temp;
+    static char namebuf[256];
 
-    /* normalize root */
+    /* normalize path: drop trailing slash unless root "/" */
+    if (plen > 1 && path[plen-1] == '/') {
+        while (plen > 1 && path[plen-1] == '/') plen--; /* treat as without trailing slash */
+    }
     int root = (plen == 0 || (plen == 1 && path[0] == '/'));
 
-    for (int i = 0; i < OVERLAY_MAX_FILES; ++i) {
-        if (!overlay[i].used) continue;
-        const char *name = overlay[i].name;
-        /* skip if not under path */
+    /* First: scan packaged initrd entries and return immediate unique children
+     * but skip packaged entries that are shadowed by overlay entries with the
+     * same full path. We also deduplicate multiple packaged entries that map
+     * to the same immediate child by only returning the first occurrence. */
+    for (unsigned int i = 0; i < initrd_files_count; ++i) {
+        const char *name = initrd_files[i].name;
+        if (!name) continue;
+        /* must be under path */
         if (!root) {
             if (strncmp(name, path, plen) != 0) continue;
             if (name[plen] != '/') continue; /* not an immediate child */
-            /* child name starts at name+plen+1 until next '/' or '\0' */
+            const char *child = name + plen + 1;
+            const char *slash = strchr(child, '/');
+            size_t childlen = slash ? (size_t)(slash - child) : strlen(child);
+
+            /* check if a previous packaged entry produced the same child name */
+            int dup = 0;
+            for (unsigned int j = 0; j < i; ++j) {
+                const char *jn = initrd_files[j].name;
+                if (strncmp(jn, path, plen) != 0) continue;
+                if (jn[plen] != '/') continue;
+                const char *jchild = jn + plen + 1;
+                const char *jslash = strchr(jchild, '/');
+                size_t jchildlen = jslash ? (size_t)(jslash - jchild) : strlen(jchild);
+                if (jchildlen == childlen && strncmp(jchild, child, childlen) == 0) { dup = 1; break; }
+            }
+            if (dup) continue;
+
+            /* construct full path of this immediate child */
+            if (childlen + plen + 2 > sizeof(namebuf)) continue; /* too long */
+            memcpy(namebuf, path, plen);
+            namebuf[plen] = '/';
+            memcpy(namebuf + plen + 1, child, childlen);
+            namebuf[plen + 1 + childlen] = '\0';
+
+            /* skip if overlay shadows this full path */
+            if (overlay_find(namebuf) >= 0) continue;
+
+            if (found == index) {
+                /* if this packaged entry corresponds to a file (no further slash)
+                 * return its data; otherwise mark as directory (data=NULL). */
+                temp.name = namebuf;
+                if (slash == NULL) {
+                    temp.data = initrd_files[i].data;
+                    temp.size = initrd_files[i].size;
+                } else {
+                    temp.data = NULL;
+                    temp.size = 0;
+                }
+                if (out) *out = &temp;
+                return FS_OK;
+            }
+            found++;
         } else {
-            /* root: immediate children are those without additional '/' besides leading */
+            /* root: immediate children are names starting at pos 1 until next '/' */
             if (name[0] != '/') continue;
+            const char *child = name + 1;
+            if (*child == '\0') continue;
+            const char *slash = strchr(child, '/');
+            size_t childlen = slash ? (size_t)(slash - child) : strlen(child);
+
+            /* check duplicate among earlier packaged entries */
+            int dup = 0;
+            for (unsigned int j = 0; j < i; ++j) {
+                const char *jn = initrd_files[j].name;
+                if (jn[0] != '/') continue;
+                const char *jchild = jn + 1;
+                const char *jslash = strchr(jchild, '/');
+                size_t jchildlen = jslash ? (size_t)(jslash - jchild) : strlen(jchild);
+                if (jchildlen == childlen && strncmp(jchild, child, childlen) == 0) { dup = 1; break; }
+            }
+            if (dup) continue;
+
+            if (1 + childlen + 1 > sizeof(namebuf)) continue;
+            namebuf[0] = '/';
+            memcpy(namebuf + 1, child, childlen);
+            namebuf[1 + childlen] = '\0';
+
+            if (overlay_find(namebuf) >= 0) continue;
+
+            if (found == index) {
+                temp.name = namebuf;
+                if (slash == NULL) {
+                    temp.data = initrd_files[i].data;
+                    temp.size = initrd_files[i].size;
+                } else {
+                    temp.data = NULL;
+                    temp.size = 0;
+                }
+                if (out) *out = &temp;
+                return FS_OK;
+            }
+            found++;
         }
-        if (found == index) {
-            temp.name = overlay[i].name;
-            temp.data = overlay[i].data;
-            temp.size = overlay[i].size;
-            if (out) *out = &temp;
-            return FS_OK;
-        }
-        found++;
     }
+
+    /* Second: scan overlay entries for immediate children (deduplicated by
+     * design above since we already skipped overlay-shadowed packaged items).
+     * Return overlay entries afterwards. */
+    for (int i = 0; i < OVERLAY_MAX_FILES; ++i) {
+        if (!overlay[i].used) continue;
+        const char *name = overlay[i].name;
+        if (!name) continue;
+        if (!root) {
+            if (strncmp(name, path, plen) != 0) continue;
+            if (name[plen] != '/') continue;
+            const char *child = name + plen + 1;
+            const char *slash = strchr(child, '/');
+            size_t childlen = slash ? (size_t)(slash - child) : strlen(child);
+            if (childlen + plen + 2 > sizeof(namebuf)) continue;
+            memcpy(namebuf, path, plen);
+            namebuf[plen] = '/';
+            memcpy(namebuf + plen + 1, child, childlen);
+            namebuf[plen + 1 + childlen] = '\0';
+            if (found == index) {
+                temp.name = namebuf; /* overlay stores the canonical name but we return constructed fullpath */
+                temp.data = overlay[i].data;
+                temp.size = overlay[i].size;
+                if (out) *out = &temp;
+                return FS_OK;
+            }
+            found++;
+        } else {
+            if (name[0] != '/') continue;
+            const char *child = name + 1;
+            const char *slash = strchr(child, '/');
+            size_t childlen = slash ? (size_t)(slash - child) : strlen(child);
+            if (1 + childlen + 1 > sizeof(namebuf)) continue;
+            namebuf[0] = '/';
+            memcpy(namebuf + 1, child, childlen);
+            namebuf[1 + childlen] = '\0';
+            if (found == index) {
+                temp.name = namebuf;
+                temp.data = overlay[i].data;
+                temp.size = overlay[i].size;
+                if (out) *out = &temp;
+                return FS_OK;
+            }
+            found++;
+        }
+    }
+
     return FS_ENOENT;
 }
 

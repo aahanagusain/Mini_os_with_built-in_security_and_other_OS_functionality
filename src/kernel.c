@@ -142,22 +142,32 @@ int main(void)
 			{
 				strcpy(buffer, tolower(buffer));
 				insert_at_head(&head, create_new_node(buffer));
-				 if (strlen(buffer) > 0 && strcmp(buffer, "ls") == 0)
+				 if (strlen(buffer) > 0 && strncmp(buffer, "ls", 2) == 0)
 				{
-					/* list embedded initrd files */
+					/* support: ls [path] -> list immediate children using fs_listdir */
 					const struct fs_file *f;
+					char *p = buffer + 2;
+					while (*p == ' ') p++;
+					const char *path = (*p == '\0') ? "/" : p;
 					unsigned int idx = 0;
 					int found = 0;
-					while (fs_readdir(idx, &f) == FS_OK) {
-						/* annotate overlay files created at runtime */
+					while (fs_listdir(path, idx, &f) == FS_OK) {
+						/* print the basename of the returned child */
+						const char *name = f->name;
+						const char *base = name;
+						/* find last '/' */
+					int i;
+					for (i = strlen(name) - 1; i >= 0; --i) {
+						if (name[i] == '/') { base = name + i + 1; break; }
+					}
 						if (fs_is_overlay(f->name))
-							printk("\n\t%s\t%u bytes\t(overlay)", f->name, (unsigned)f->size);
+							printk("\n\t%s\t%u bytes\t(overlay)", base, (unsigned)f->size);
 						else
-							printk("\n\t%s\t%u bytes", f->name, (unsigned)f->size);
+							printk("\n\t%s\t%u bytes", base, (unsigned)f->size);
 						idx++;
 						found = 1;
 					}
-					if (!found) printk("\n\t(initrd) empty\n");
+					if (!found) printk("\n\t(empty)\n");
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "hello") == 0)
 				{
