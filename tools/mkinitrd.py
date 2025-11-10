@@ -13,14 +13,19 @@ def emit_c(path, relpath):
     var = f"file_{abs(hash(relpath)) & 0xffffffff:08x}"
     with open(path, 'rb') as f:
         data = f.read()
-    print(f"static const uint8_t {var}[] = ")
+    print(f"static const uint8_t {var}[] = {{")
     for i in range(0, len(data), 16):
         chunk = data[i:i+16]
         line = ', '.join(str(b) for b in chunk)
         print(f"    {line},")
     print("};")
     print(f"    ")
-    return var, len(data)
+    # capture metadata from host filesystem
+    st = os.stat(path)
+    uid = st.st_uid
+    gid = st.st_gid
+    mode = st.st_mode & 0o777
+    return var, len(data), uid, gid, mode
 
 def main():
     if len(sys.argv) != 2:
@@ -35,11 +40,11 @@ def main():
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, root)
             rel = '/' + rel.replace('\\', '/')
-            var, size = emit_c(full, rel)
-            entries.append((rel, var, size))
+            var, size, uid, gid, mode = emit_c(full, rel)
+            entries.append((rel, var, size, uid, gid, mode))
     print('const struct fs_file initrd_files[] = {')
-    for path, var, size in entries:
-        print(f'    {{ "{path}", {var}, {size} }},')
+    for path, var, size, uid, gid, mode in entries:
+        print(f'    {{ "{path}", {var}, {size}, {uid}, {gid}, {mode} }},')
     print('};')
     print()
     print(f'const unsigned int initrd_files_count = sizeof(initrd_files)/sizeof(initrd_files[0]);')

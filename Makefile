@@ -107,5 +107,3 @@ install: pegasus.bin
 
 clean:
 	rm -rf $(OBJ_DIR) pegasus.bin pegasus.iso iso
-	# remove generated initrd if present
-	rm -f $(INITRD_SRC)

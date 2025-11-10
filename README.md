@@ -11,13 +11,16 @@ Requirements:-
 -qemu
 
 
+make initrd data file:
+    python3 tools/mkinitrd.py fsroot > src/initrd_data.c
+
 Make Iso file:
     make pegasus.iso
 
 
 Run ISO file:
    - run iso in vmware 
-   - qemu-system-x86_64 -m 1024 -cdrom pegasus.iso -serial mon:stdio -no-reboot -machine accel=tcg -boot order=d
+   - qemu-system-x86_64 -m 1024 -cdrom pegasus.iso -serial mon:stdio -no-reboot
 
 
 references:
