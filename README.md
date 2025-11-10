@@ -23,6 +23,15 @@ Run ISO file:
    - qemu-system-x86_64 -m 1024 -cdrom pegasus.iso -serial mon:stdio -no-reboot
 
 
+Add users with passwords:  adduser username 
+Manage firewall rules:
+fw allow port 80      # Allow HTTP
+fw deny port 23       # Block telnet
+fw allow ip 10.0.0.1  # Allow specific IP
+fw list              # Show all rules
+The system provides a default-deny policy for maximum security, requiring explicit ALLOW rules for permitted traffic.
+
+
 references:
  mathematical functions - https://developer.download.nvidia.com/cg/index_stdlib.html
  https://en.wikipedia.org/wiki/X86_calling_conventions

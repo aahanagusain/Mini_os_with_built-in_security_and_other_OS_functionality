@@ -18,6 +18,7 @@
 #include "../include/fs.h"
 #include "../include/user.h"
 #include "../include/gui.h"
+#include "../include/netsec.h"
 
 #define DEBUG false
 
@@ -76,6 +77,7 @@ int main(void)
 	char buffer[BUFFER_SIZE];
 	uint8_t byte = 0;
 	node_t *head = NULL;
+	memset(buffer, 0, BUFFER_SIZE);
 
 	terminal_initialize(default_font_color, COLOR_BLACK);
 	terminal_set_colors(COLOR_LIGHT_GREEN, COLOR_BLACK);
@@ -114,6 +116,12 @@ int main(void)
 	printk("\nInitializing user database...");
 	int ur = user_init_from_file("/etc/passwd");
 	if (ur != 0) printk("failed: %d\n", ur);
+	else printk("ok\n");
+
+	/* Initialize network security */
+	printk("Initializing network security...");
+	int nr = netsec_init();
+	if (nr != 0) printk("failed: %d\n", nr);
 	else printk("ok\n");
 	gui_init();
 
@@ -171,9 +179,12 @@ int main(void)
 		{
 			if (byte == ENTER)
 			{
-				strcpy(buffer, tolower(buffer));
+				char cmd_copy[BUFFER_SIZE];
+				strncpy(cmd_copy, buffer, BUFFER_SIZE-1);
+				cmd_copy[BUFFER_SIZE-1] = '\0';
+				for (int i = 0; cmd_copy[i]; i++) cmd_copy[i] = tolower(cmd_copy[i]);
 				insert_at_head(&head, create_new_node(buffer));
-				 if (strlen(buffer) > 0 && strncmp(buffer, "ls", 2) == 0)
+				 if (strlen(buffer) > 0 && strncmp(cmd_copy, "ls", 2) == 0)
 				{
 					/* support: ls [path] -> list immediate children using fs_listdir */
 					const struct fs_file *f;
@@ -286,6 +297,11 @@ int main(void)
 					printk("\n\t history            - \tdisplays commands history");
 					printk("\n\t reboot             - \treboots system");
 					printk("\n\t shutdown           - \tsends shutdown signal");
+					printk("\n\t fw list            - \tlist firewall rules");
+					printk("\n\t fw allow port N    - \tallow traffic on port N");
+					printk("\n\t fw allow ip A.B.C.D- \tallow traffic from IP");
+					printk("\n\t fw deny port N     - \tdeny traffic on port N"); 
+					printk("\n\t fw deny ip A.B.C.D - \tdeny traffic from IP");
 					printk("\n");
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "about") == 0)
@@ -343,14 +359,22 @@ int main(void)
 							char *text = q + 1;
 							while (*text == ' ') text++;
 							size_t tlen = strlen(text);
+							fs_fd_t fd = -1;
+
 							/* Try to open the file */
-							fs_fd_t fd = fs_open(p, FS_O_RDONLY);
+							fd = fs_open(p, FS_O_RDONLY);
 							if (fd < 0) {
 								/* not present: create empty overlay file first */
 								int c = fs_create(p, (const uint8_t *)"", 0);
-								if (c != FS_OK) { printk("\n(write) create failed: %d\n", c); continue; }
+								if (c != FS_OK) { 
+									printk("\n(write) create failed: %d\n", c);
+									continue; 
+								}
 								fd = fs_open(p, FS_O_RDONLY);
-								if (fd < 0) { printk("\n(write) open failed after create: %d\n", fd); continue; }
+								if (fd < 0) { 
+									printk("\n(write) open failed after create: %d\n", fd);
+									continue; 
+								}
 							}
 							/* Attempt to write (fs_write will fail with FS_EIO if the fd refers to a read-only packaged file) */
 							int w = fs_write(fd, (const void *)text, tlen);
@@ -460,6 +484,111 @@ int main(void)
 					terminal_initialize(default_font_color, COLOR_BLACK);
 					strcpy(&buffer[strlen(buffer)], "");
 				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "fw ", 3) == 0)
+				{
+					char *p = buffer + 3;
+					while (*p == ' ') p++;
+
+					if (strncmp(p, "list", 4) == 0) {
+						struct fw_rule rules[MAX_RULES];
+						int num = netsec_list_rules(rules, MAX_RULES);
+						if (num < 0) {
+							printk("\nError listing rules\n");
+						} else {
+							printk("\nFirewall Rules:\n");
+							for (int i = 0; i < num; i++) {
+								struct fw_rule *r = &rules[i];
+								printk("\n%d: %s ", i, 
+									r->type == RULE_ALLOW ? "ALLOW" : "DENY");
+								switch(r->target_type) {
+									case TARGET_ANY:
+										printk("ANY");
+										break;
+									case TARGET_PORT:
+										printk("PORT %u", r->port);
+										break;
+									case TARGET_ADDRESS:
+										printk("IP %u.%u.%u.%u/%u.%u.%u.%u",
+											(r->address >> 24) & 0xFF,
+											(r->address >> 16) & 0xFF,
+											(r->address >> 8) & 0xFF,
+											r->address & 0xFF,
+											(r->mask >> 24) & 0xFF,
+											(r->mask >> 16) & 0xFF,
+											(r->mask >> 8) & 0xFF,
+											r->mask & 0xFF);
+										break;
+								}
+							}
+							printk("\n");
+						}
+					}
+					else if (strncmp(p, "allow ", 6) == 0 || strncmp(p, "deny ", 5) == 0) {
+						int is_allow = (p[0] == 'a');
+						p += is_allow ? 6 : 5;
+						while (*p == ' ') p++;
+
+						struct fw_rule rule;
+						rule.type = is_allow ? RULE_ALLOW : RULE_DENY;
+
+						if (strncmp(p, "port ", 5) == 0) {
+							p += 5;
+							rule.target_type = TARGET_PORT;
+							rule.port = atoi(p);
+							int r = netsec_add_rule(&rule);
+							if (r == 0) {
+								printk("\nAdded rule to %s port %u\n",
+									is_allow ? "allow" : "deny", rule.port);
+							} else {
+								printk("\nFailed to add rule: %d\n", r);
+							}
+						}
+						else if (strncmp(p, "ip ", 3) == 0) {
+							p += 3;
+							rule.target_type = TARGET_ADDRESS;
+							/* Parse IP A.B.C.D */
+							uint32_t addr = 0;
+							for (int i = 0; i < 4; i++) {
+								int val = 0;
+								while (*p >= '0' && *p <= '9') {
+									val = val * 10 + (*p - '0');
+									p++;
+								}
+								addr = (addr << 8) | (val & 0xFF);
+								if (i < 3) {
+									if (*p != '.') goto bad_ip;
+									p++;
+								}
+							}
+							rule.address = addr;
+							rule.mask = 0xFFFFFFFF;  /* Full mask */
+							int r = netsec_add_rule(&rule);
+							if (r == 0) {
+								printk("\nAdded rule to %s IP %u.%u.%u.%u\n",
+									is_allow ? "allow" : "deny",
+									(addr >> 24) & 0xFF,
+									(addr >> 16) & 0xFF,
+									(addr >> 8) & 0xFF,
+									addr & 0xFF);
+							} else {
+								printk("\nFailed to add rule: %d\n", r);
+							}
+							continue;
+						bad_ip:
+							printk("\nInvalid IP address format. Use: A.B.C.D\n");
+						}
+						else {
+							printk("\nUnknown target type. Use: port N or ip A.B.C.D\n");
+						}
+					}
+					else {
+						printk("\nUnknown firewall command\n");
+						printk("Usage:\n");
+						printk("  fw list\n");
+						printk("  fw allow|deny port N\n");
+						printk("  fw allow|deny ip A.B.C.D\n");
+					}
+				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "datetime") == 0)
 				{
 					printk("\nCurrent datetime: ");
@@ -526,6 +655,31 @@ int main(void)
 							else printk("\n(mv) failed: %d\n", r);
 						}
 					}
+				}
+			}
+			else if (strlen(buffer) > 0 && strncmp(buffer, "adduser ", 8) == 0)
+			{
+				char *p = buffer + 8;
+				while (*p == ' ') p++;
+				if (*p == '\0') {
+					printk("\nUsage: adduser <username>\n");
+				} else {
+					char *username = p;
+					char passwd[USER_PASS_MAX];
+					while (*username == ' ') username++;
+					/* Get password interactively */
+					printk("\nEnter password: ");
+					int i = 0;
+					char c;
+					while ((c = getch_blocking()) != '\n' && c != '\r' && i < USER_PASS_MAX-1) {
+						passwd[i++] = c;
+						printk("*"); /* echo asterisk */
+					}
+					passwd[i] = '\0';
+					/* Try to create user */
+					int ur = user_add(username, passwd);
+					if (ur != 0) printk("\nFailed to create user: %d\n", ur);
+					else printk("\nUser created successfully\n");
 				}
 			}
 			else if (strlen(buffer) > 0 && strncmp(buffer, "truncate ", 9) == 0)
@@ -615,11 +769,12 @@ int main(void)
 			}
 			else if (byte == BACKSPACE)
 			{
-				char c = normalmap[byte];
-				char *s;
-				s = ctos(s, c);
-				printk("%s", s);
-				buffer[strlen(buffer) - 1] = '\0';
+				if (strlen(buffer) > 0) {
+					char c = normalmap[byte];
+					char backspace_str[2] = {c, '\0'};
+					printk("%s", backspace_str);
+					buffer[strlen(buffer) - 1] = '\0';
+				}
 			}
 			else
 			{
@@ -652,7 +807,11 @@ int main(void)
 				char *s;
 				s = ctos(s, c);
 				printk("%s", s);
-				strcpy(&buffer[strlen(buffer)], s);
+				size_t curr_len = strlen(buffer);
+				if (curr_len + 2 < BUFFER_SIZE) { // +2 for char and null terminator
+					strncpy(&buffer[curr_len], s, BUFFER_SIZE - curr_len - 1);
+					buffer[BUFFER_SIZE-1] = '\0';
+				}
 				if (byte == 0x2A || byte == 0x36)
 				{
 					shift = true;
