@@ -20,11 +20,17 @@ struct fs_file {
     const char *name;       /* null-terminated path, e.g. "/README.txt" */
     const uint8_t *data;   /* pointer to contents */
     size_t size;           /* size in bytes */
+    unsigned int uid;      /* owner uid (from packaging) */
+    unsigned int gid;      /* owner gid */
+    unsigned int mode;     /* permission bits (POSIX-like) */
 };
 
 struct fs_stat {
     size_t size;    /* file size in bytes */
     int is_dir;     /* 0 = file, 1 = directory (not used by ramfs) */
+    unsigned int uid; /* owner user id */
+    unsigned int gid; /* owner group id */
+    unsigned int mode; /* permission bits (POSIX-like) */
 };
 
 /* Mount the embedded initrd produced by tools/mkinitrd.py. This will make
@@ -59,6 +65,10 @@ int fs_truncate(const char *path, size_t size);
 int fs_rmdir(const char *path);
 /* Return 1 if path exists in the writable overlay, 0 otherwise */
 int fs_is_overlay(const char *path);
+
+/* Permission and ownership helpers */
+int fs_chmod(const char *path, unsigned int mode);
+int fs_chown(const char *path, unsigned int uid, unsigned int gid);
 
 /* Phase 2: writable in-memory file operations (simple ramfs overlay).
  * These are minimal helpers to create, write (append/overwrite), unlink

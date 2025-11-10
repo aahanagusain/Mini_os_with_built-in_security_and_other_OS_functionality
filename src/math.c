@@ -260,6 +260,17 @@ double sin(double x)
     return result;
 }
 
+/* Compatibility wrappers for renamed/internal calls */
+double k_abs(double x)
+{
+    return abs(x);
+}
+
+double k_log(double x, double y)
+{
+    return log(x, y);
+}
+
 double cos(double x)
 {
     return sin(PI * 0.5 - x);

@@ -124,8 +124,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "exp(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "exp(");
         parser += strlen("exp(");
@@ -144,8 +144,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "ln(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "ln(");
         parser += strlen("ln(");
@@ -164,8 +164,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "log10(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "log10(");
         parser += strlen("log10(");
@@ -184,8 +184,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "sqrt(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "sqrt(");
         parser += strlen("sqrt(");
@@ -204,8 +204,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "abs(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "abs(");
         parser += strlen("abs(");
@@ -213,7 +213,7 @@ void math_shell(char *buffer)
         if (num != EPS)
         {
             printk("\n");
-            printk(ftoa(buff, abs(num), 6));
+            printk(ftoa(buff, k_abs(num), 6));
         }
         else
         {
@@ -224,8 +224,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "asinh(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "asinh(");
         parser += strlen("asinh(");
@@ -244,8 +244,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "acosh(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "acosh(");
         parser += strlen("acosh(");
@@ -264,8 +264,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "atanh(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "atanh(");
         parser += strlen("atanh(");
@@ -284,8 +284,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "asin(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "asin(");
         parser += strlen("asin(");
@@ -304,8 +304,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "acos(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "acos(");
         parser += strlen("acos(");
@@ -324,8 +324,8 @@ void math_shell(char *buffer)
     }
     else if (strlen(buffer) > 0 && strstr(buffer, "atan(") != NULL)
     {
-        char *parser;
-        char *buff;
+    char *parser;
+    char buff[64];
         double num;
         parser = strstr(buffer, "atan(");
         parser += strlen("atan(");
@@ -345,7 +345,7 @@ void math_shell(char *buffer)
     else if (strlen(buffer) > 0 && strstr(buffer, "sin(") != NULL)
     {
         char *parser;
-        char *buff;
+    char buff[64];
         double num;
         parser = strstr(buffer, "sin(");
         parser += strlen("sin(");
@@ -507,7 +507,7 @@ void math_shell(char *buffer)
             parser++;
             n = parse_float(parser, ')');
             printk("\n");
-            printk(ftoa(buff, log(num, n), 6));
+            printk(ftoa(buff, k_log(num, n), 6));
         }
         else
         {

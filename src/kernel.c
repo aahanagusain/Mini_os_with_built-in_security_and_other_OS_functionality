@@ -16,6 +16,8 @@
 #include "../include/shell_history.h"
 #include "../include/calculator.h"
 #include "../include/fs.h"
+#include "../include/user.h"
+#include "../include/gui.h"
 
 #define DEBUG false
 
@@ -72,9 +74,7 @@ static char getch_blocking(void)
 int main(void)
 {
 	char buffer[BUFFER_SIZE];
-	char *string;
-	char *buff;
-	uint8_t byte;
+	uint8_t byte = 0;
 	node_t *head = NULL;
 
 	terminal_initialize(default_font_color, COLOR_BLACK);
@@ -93,19 +93,50 @@ int main(void)
 	heap_init();
 
 	/* Mount embedded initrd (ramfs) and print a test file if present */
-	if (fs_mount_initrd_embedded() == FS_OK) {
-		fs_fd_t fd = fs_open("/README.txt", FS_O_RDONLY);
-		if (fd >= 0) {
-			char fbuf[256];
-			int r = fs_read(fd, fbuf, sizeof(fbuf) - 1);
-			if (r > 0) {
-				fbuf[r] = '\0';
-				printk("\n--- initrd /README.txt ---\n%s\n---\n", fbuf);
-			}
-			fs_close(fd);
-		} else {
-			printk("\n(initrd) /README.txt not found\n");
+	printk("\nMounting embedded initrd...");
+	int mres = fs_mount_initrd_embedded();
+	if (mres != FS_OK) {
+		printk("failed: %d\n", mres);
+	} else {
+		printk("ok\n");
+		/* Try to list /etc to see what's there */
+		printk("\nListing /etc:\n");
+		const struct fs_file *f;
+		unsigned int idx = 0;
+		while (fs_listdir("/etc", idx, &f) == FS_OK) {
+			printk("\t%s (%u bytes)\n", f->name, (unsigned)f->size);
+			idx++;
 		}
+		if (idx == 0) printk("\t(empty)\n");
+	}
+
+	/* Initialize user database from initrd and show GUI login if available */
+	printk("\nInitializing user database...");
+	int ur = user_init_from_file("/etc/passwd");
+	if (ur != 0) printk("failed: %d\n", ur);
+	else printk("ok\n");
+	gui_init();
+
+	/* Attempt a GUI-based login (max 3 tries). If no users are present, skip. */
+	{
+		char uname[USER_NAME_MAX];
+		char passwd[USER_PASS_MAX];
+		int tries = 0;
+		int logged = 0;
+		while (tries < 3) {
+			uname[0] = '\0'; passwd[0] = '\0';
+			if (gui_prompt("login: ", uname, sizeof(uname), 0) != 0) break;
+			if (gui_prompt("password: ", passwd, sizeof(passwd), 1) != 0) break;
+			if (user_login(uname, passwd) == 0) {
+				const user_t *cur = user_current();
+				if (cur) printk("\nWelcome, %s!\n", cur->name);
+				logged = 1; break;
+			} else {
+				printk("\nLogin failed\n");
+			}
+			tries++;
+		}
+		if (!logged) printk("\nProceeding as guest.\n");
 	}
 
 #if DEBUG
@@ -136,7 +167,7 @@ int main(void)
 	print_prompt();
 	while (true)
 	{
-		while (byte = scan())
+		while ((byte = scan()) != 0)
 		{
 			if (byte == ENTER)
 			{
@@ -160,10 +191,23 @@ int main(void)
 					for (i = strlen(name) - 1; i >= 0; --i) {
 						if (name[i] == '/') { base = name + i + 1; break; }
 					}
+						/* print permissions, owner, size */
+						unsigned int mode = f->mode;
+						char perms[11];
+						perms[10] = '\0';
+						perms[0] = (f->data == NULL) ? 'd' : '-';
+						for (int b = 0; b < 9; ++b) {
+							int shift = 8 - b;
+							unsigned int bit = (mode >> shift) & 1;
+							int pos = 1 + b;
+							if (b % 3 == 0) perms[pos] = bit ? 'r' : '-';
+							else if (b % 3 == 1) perms[pos] = bit ? 'w' : '-';
+							else perms[pos] = bit ? 'x' : '-';
+						}
 						if (fs_is_overlay(f->name))
-							printk("\n\t%s\t%u bytes\t(overlay)", base, (unsigned)f->size);
+							printk("\n\t%s %s %u:%u %u bytes (overlay)", perms, base, f->uid, f->gid, (unsigned)f->size);
 						else
-							printk("\n\t%s\t%u bytes", base, (unsigned)f->size);
+							printk("\n\t%s %s %u:%u %u bytes", perms, base, f->uid, f->gid, (unsigned)f->size);
 						idx++;
 						found = 1;
 					}
@@ -286,7 +330,7 @@ int main(void)
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "write ", 6) == 0)
 				{
-					char *p = buffer + 6;
+					char *p = buffer + 6; 
 					while (*p == ' ') p++;
 					if (*p == '\0') {
 						printk("\nUsage: write <path> <text>\n");
@@ -336,6 +380,75 @@ int main(void)
 							else printk("\n(write) failed: %d\n", w);
 							if (fd >= 0) fs_close(fd);
 						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "cp ", 3) == 0)
+				{
+					char *p = buffer + 3;
+					while (*p == ' ') p++;
+					char *q = strchr(p, ' ');
+					if (!q) { printk("\nUsage: cp <src> <dst>\n"); }
+					else {
+						*q = '\0';
+						char *src = p; char *dst = q + 1;
+						while (*dst == ' ') dst++;
+						struct fs_stat st;
+						if (fs_stat(src, &st) != FS_OK) { printk("\n(cp) source not found\n"); }
+						else {
+							char *buf = kmalloc(st.size);
+							if (!buf) { printk("\n(cp) oom\n"); }
+							else {
+								fs_fd_t r = fs_open(src, FS_O_RDONLY);
+								if (r < 0) { printk("\n(cp) open read failed\n"); kfree(buf); }
+								else {
+									int got = fs_read(r, buf, st.size);
+									fs_close(r);
+									if (got < 0) { printk("\n(cp) read failed\n"); kfree(buf); }
+									else {
+										int c = fs_create(dst, (const uint8_t *)buf, (size_t)got);
+										if (c == FS_OK) printk("\n(cp) %s -> %s\n", src, dst);
+										else printk("\n(cp) create failed: %d\n", c);
+										kfree(buf);
+									}
+								}
+							}
+						}
+					}
+				}
+
+				else if (strlen(buffer) > 0 && strncmp(buffer, "chmod ", 6) == 0)
+				{
+					char *p = buffer + 6; while (*p == ' ') p++;
+					char *q = strchr(p, ' ');
+					if (!q) { printk("\nUsage: chmod <mode> <path>\n"); }
+					else {
+						*q = '\0'; char *mstr = p; char *path = q + 1; while (*path == ' ') path++;
+						/* parse mode: octal if starts with 0 */
+						int mode = 0; int base = 10; if (mstr[0] == '0') base = 8;
+						for (char *c = mstr; *c; ++c) { if (*c >= '0' && *c <= '9') mode = mode * base + (*c - '0'); }
+						int r = fs_chmod(path, (unsigned int)mode);
+						if (r == FS_OK) printk("\n(chmod) %s -> %o\n", path, mode); else printk("\n(chmod) failed: %d\n", r);
+					}
+				}
+
+				else if (strlen(buffer) > 0 && strncmp(buffer, "chown ", 6) == 0)
+				{
+					char *p = buffer + 6; while (*p == ' ') p++;
+					/* support two forms: chown uid:gid path  OR chown uid gid path */
+					char *sp = strchr(p, ' ');
+					if (!sp) { printk("\nUsage: chown <uid>:<gid> <path>  OR chown <uid> <gid> <path>\n"); }
+					else {
+						*sp = '\0'; char *arg = p; char *rest = sp + 1; while (*rest == ' ') rest++;
+						unsigned int uid = 0, gid = 0;
+						char *colon = strchr(arg, ':');
+						if (colon) { *colon = '\0'; uid = (unsigned int)atoi(arg); gid = (unsigned int)atoi(colon + 1); }
+						else {
+							/* next token is gid */
+							char *sp2 = strchr(rest, ' ');
+							if (!sp2) { printk("\nUsage: chown <uid> <gid> <path>\n"); continue; }
+							*sp2 = '\0'; uid = (unsigned int)atoi(arg); gid = (unsigned int)atoi(rest); rest = sp2 + 1; while (*rest == ' ') rest++; }
+						int r = fs_chown(rest, uid, gid);
+						if (r == FS_OK) printk("\n(chown) %s -> %u:%u\n", rest, uid, gid); else printk("\n(chown) failed: %d\n", r);
 					}
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "fontcolor") == 0)
@@ -511,7 +624,6 @@ int main(void)
 			else
 			{
 				char c1 = togglecode[byte];
-				char c2 = shiftcode[byte];
 				char c;
 				if (c1 == CAPSLOCK)
 				{

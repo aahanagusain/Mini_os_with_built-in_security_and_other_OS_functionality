@@ -4,17 +4,13 @@
 #include "../include/memory.h"
 #include "../include/tty.h"
 
-void sha256(char *message)
+/* Minimal SHA-256 implementation that supports single-block messages
+ * (messages up to 55 bytes). This is sufficient for hashing passwords
+ * in this small kernel. For longer messages the function will return -1.
+ */
+static int sha256_compute(const char *message, uint32_t out[8])
 {
-    /* Note 1: All variables are 32 bit uint32_tegers and addition is calculated modulo 2^32
-    Note 2: For each round, there is one round constant k[i] and one entry in the message schedule array w[i], 0 ≤ i ≤ 63
-    Note 3: The compression function uses 8 working variables, a through h
-    Note 4: Big-endian convention is used when expressing the constants in this pseudocode,
-    and when parsing message block data from bytes to words, for example,
-    the first word of the input message "abc" after padding is 0x61626380 */
-
-    // Initialize hash values:
-    // (first 32 bits of the fractional parts of the square roots of the first 8 primes 2..19):
+    if (!message || !out) return -1;
     uint32_t h0 = 0x6a09e667;
     uint32_t h1 = 0xbb67ae85;
     uint32_t h2 = 0x3c6ef372;
@@ -24,8 +20,6 @@ void sha256(char *message)
     uint32_t h6 = 0x1f83d9ab;
     uint32_t h7 = 0x5be0cd19;
 
-    // Initialize array of round constants:
-    // (first 32 bits of the fractional parts of the cube roots of the first 64 primes 2..311):
     uint32_t k[64] = {
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -36,93 +30,68 @@ void sha256(char *message)
         0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
 
-    int i, j = 0;
-    unsigned char aux[SIZE][4];
-    uint32_t WORD[SIZE];
-    uint32_t w[SIZE];
+    size_t len = strlen(message);
+    if (len > 55) return -1;
 
-    for (i = 0; i < SIZE; i++)
-    {
-        WORD[i] = 0;
+    uint8_t block[64];
+    memset(block, 0, sizeof(block));
+    memcpy(block, message, len);
+    block[len] = 0x80;
+    uint64_t bitlen = (uint64_t)len * 8;
+    for (int i = 0; i < 8; ++i) block[63 - i] = (uint8_t)(bitlen >> (i * 8));
+
+    uint32_t w[64];
+    for (int i = 0; i < 16; ++i) {
+        w[i] = ((uint32_t)block[i*4] << 24) | ((uint32_t)block[i*4+1] << 16) | ((uint32_t)block[i*4+2] << 8) | ((uint32_t)block[i*4+3]);
+    }
+    for (int i = 16; i < 64; ++i) {
+        uint32_t s0 = _rotr(w[i-15], 7) ^ _rotr(w[i-15], 18) ^ (w[i-15] >> 3);
+        uint32_t s1 = _rotr(w[i-2], 17) ^ _rotr(w[i-2], 19) ^ (w[i-2] >> 10);
+        w[i] = w[i-16] + s0 + w[i-7] + s1;
     }
 
-    // Step 1 - Convert message to binary
-    while (message[j] != '\0')
-    {
-        WORD[j] = (uint32_t)message[j];
-        j++;
+    uint32_t a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (int i = 0; i < 64; ++i) {
+        uint32_t S1 = _rotr(e,6) ^ _rotr(e,11) ^ _rotr(e,25);
+        uint32_t ch = (e & f) ^ ((~e) & g);
+        uint32_t temp1 = h + S1 + ch + k[i] + w[i];
+        uint32_t S0 = _rotr(a,2) ^ _rotr(a,13) ^ _rotr(a,22);
+        uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t temp2 = S0 + maj;
+        h = g; g = f; f = e; e = d + temp1;
+        d = c; c = b; b = a; a = temp1 + temp2;
     }
 
-    // Step 2 - pad data with zeros
+    h0 += a; h1 += b; h2 += c; h3 += d; h4 += e; h5 += f; h6 += g; h7 += h;
 
-    // Step 3 - append a single bit
-    WORD[j] = 0b10000000;
+    out[0] = h0; out[1] = h1; out[2] = h2; out[3] = h3; out[4] = h4; out[5] = h5; out[6] = h6; out[7] = h7;
+    return 0;
+}
 
-    // Step 4 - append length of message at the end
-    WORD[SIZE - 1] = strlen(message) * sizeof(char) * 8;
-
-    // Step 5 - Copy data from step 1 into new array with 32-bits words
-    for (i = 0; i < SIZE; i++)
-    {
-        w[i] = concatenate_bits(WORD[4 * i], WORD[4 * i + 1], WORD[4 * i + 2], WORD[4 * i + 3]);
+int sha256_hex(const char *message, char *out, size_t out_len)
+{
+    if (!message || !out || out_len < 65) return -1;
+    uint32_t digest[8];
+    if (sha256_compute(message, digest) != 0) return -1;
+    const char *hex = "0123456789abcdef";
+    for (int i = 0; i < 8; ++i) {
+        uint32_t v = digest[i];
+        for (int b = 0; b < 4; ++b) {
+            uint8_t byte = (v >> (24 - b*8)) & 0xFF;
+            out[i*8 + b*2 + 0] = hex[(byte >> 4) & 0xF];
+            out[i*8 + b*2 + 1] = hex[byte & 0xF];
+        }
     }
+    out[64] = '\0';
+    return 0;
+}
 
-    for (i = 16; i < SIZE; i++)
-    {
-        w[i] = 0;
+void sha256(const char *message)
+{
+    char hex[65];
+    if (sha256_hex(message, hex, sizeof(hex)) == 0) {
+        printk("\n%s", hex);
+    } else {
+        printk("\n<sha256 error>");
     }
-
-    // Step 6 - Modify the zero-ed indexes at the end of the array
-    for (i = SIZE / 4; i < SIZE; i++)
-    {
-        uint32_t s0, s1;
-        s0 = _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
-        s1 = _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-
-    // Step 7 - Compression
-    uint32_t a = h0;
-    uint32_t b = h1;
-    uint32_t c = h2;
-    uint32_t d = h3;
-    uint32_t e = h4;
-    uint32_t f = h5;
-    uint32_t g = h6;
-    uint32_t h = h7;
-
-    for (i = 0; i < SIZE; i++)
-    {
-        uint32_t S0, S1, temp1, temp2, ch, maj;
-
-        S1 = _rotr(e, 6) ^ _rotr(e, 11) ^ _rotr(e, 25);
-        ch = (e & f) ^ ((~e) & g);
-        temp1 = (h + S1 + ch + k[i] + w[i]) % _2E32;
-        S0 = _rotr(a, 2) ^ _rotr(a, 13) ^ _rotr(a, 22);
-        maj = (a & b) ^ (a & c) ^ (b & c);
-        temp2 = (S0 + maj) % _2E32;
-        h = g;
-        g = f;
-        f = e;
-        e = (d + temp1) % _2E32;
-        d = c;
-        c = b;
-        b = a;
-        a = (temp1 + temp2) % _2E32;
-    }
-
-    // Step 8 - modify final values
-    h0 = (h0 + a) % _2E32;
-    h1 = (h1 + b) % _2E32;
-    h2 = (h2 + c) % _2E32;
-    h3 = (h3 + d) % _2E32;
-    h4 = (h4 + e) % _2E32;
-    h5 = (h5 + f) % _2E32;
-    h6 = (h6 + g) % _2E32;
-    h7 = (h7 + h) % _2E32;
-
-    // Final step - concatenate
-    unsigned char digest[256];
-    sprintf(digest, "%x%x%x%x%x%x%x%x", h0, h1, h2, h3, h4, h5, h6, h7);
-    printk("\n%s", digest);
 }

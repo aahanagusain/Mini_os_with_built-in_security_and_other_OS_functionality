@@ -32,6 +32,9 @@ struct overlay_file {
     size_t size;
     int is_dir;
     int used;
+    unsigned int uid;
+    unsigned int gid;
+    unsigned int mode; /* permission bits */
 };
 
 static struct overlay_file overlay[OVERLAY_MAX_FILES];
@@ -61,6 +64,10 @@ static int overlay_alloc(const char *path, const uint8_t *data, size_t size, int
                 overlay[i].size = 0;
             }
             overlay[i].is_dir = is_dir;
+            /* default ownership and permissions */
+            overlay[i].uid = 0;
+            overlay[i].gid = 0;
+            overlay[i].mode = is_dir ? 0755 : 0644;
             return i;
         }
     }
@@ -103,9 +110,6 @@ int fs_mount_initrd_embedded(void)
 
 static const struct fs_file *find_file(const char *path)
 {
-    for (unsigned int i = 0; i < initrd_files_count; ++i) {
-        if (strcmp(initrd_files[i].name, path) == 0) return &initrd_files[i];
-    }
     /* overlay entries take precedence */
     int oi = overlay_find(path);
     if (oi >= 0) {
@@ -114,7 +118,14 @@ static const struct fs_file *find_file(const char *path)
         temp.name = overlay[oi].name;
         temp.data = overlay[oi].data;
         temp.size = overlay[oi].size;
+        temp.uid = overlay[oi].uid;
+        temp.gid = overlay[oi].gid;
+        temp.mode = overlay[oi].mode;
         return &temp;
+    }
+    /* then check packaged initrd entries */
+    for (unsigned int i = 0; i < initrd_files_count; ++i) {
+        if (initrd_files[i].name && strcmp(initrd_files[i].name, path) == 0) return &initrd_files[i];
     }
     return NULL;
 }
@@ -216,12 +227,58 @@ int fs_close(fs_fd_t fd)
 
 int fs_stat(const char *path, struct fs_stat *st)
 {
+    /* check overlay first for metadata */
+    int oi = overlay_find(path);
+    if (oi >= 0) {
+        if (st) {
+            st->size = overlay[oi].size;
+            st->is_dir = overlay[oi].is_dir;
+            st->uid = overlay[oi].uid;
+            st->gid = overlay[oi].gid;
+            st->mode = overlay[oi].mode;
+        }
+        return FS_OK;
+    }
     const struct fs_file *f = find_file(path);
     if (!f) return FS_ENOENT;
     if (st) {
         st->size = f->size;
         st->is_dir = 0;
+        st->uid = 0; st->gid = 0; st->mode = 0644; /* defaults for packaged files */
     }
+    return FS_OK;
+}
+
+int fs_chmod(const char *path, unsigned int mode)
+{
+    int oi = overlay_find(path);
+    if (oi >= 0) {
+        overlay[oi].mode = mode;
+        return FS_OK;
+    }
+    /* packaged file: create overlay copy to store metadata */
+    const struct fs_file *f = find_file(path);
+    if (!f) return FS_ENOENT;
+    int idx = overlay_alloc(path, f->data, f->size, 0);
+    if (idx < 0) return FS_EIO;
+    overlay[idx].mode = mode;
+    return FS_OK;
+}
+
+int fs_chown(const char *path, unsigned int uid, unsigned int gid)
+{
+    int oi = overlay_find(path);
+    if (oi >= 0) {
+        overlay[oi].uid = uid;
+        overlay[oi].gid = gid;
+        return FS_OK;
+    }
+    const struct fs_file *f = find_file(path);
+    if (!f) return FS_ENOENT;
+    int idx = overlay_alloc(path, f->data, f->size, 0);
+    if (idx < 0) return FS_EIO;
+    overlay[idx].uid = uid;
+    overlay[idx].gid = gid;
     return FS_OK;
 }
 

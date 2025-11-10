@@ -36,12 +36,12 @@ struct heap
     void *saddr;
 };
 
-static struct heap kernel_heap;
-static struct heap_table kernel_heap_table;
+static struct heap kernel_heap __attribute__((unused));
+static struct heap_table kernel_heap_table __attribute__((unused));
 
 void heap_init();
 int heap_create(struct heap *heap, void *ptr, void *end, struct heap_table *table);
-void memcpy(void *dest, void *src, size_t n);
+void *memcpy(void *dest, const void *src, size_t n);
 void *heap_malloc(struct heap *heap, size_t size);
 void heap_free(struct heap *heap, void *ptr);
 void *kmalloc(size_t size);
