@@ -182,7 +182,11 @@ int main(void)
 				char cmd_copy[BUFFER_SIZE];
 				strncpy(cmd_copy, buffer, BUFFER_SIZE-1);
 				cmd_copy[BUFFER_SIZE-1] = '\0';
-				for (int i = 0; cmd_copy[i]; i++) cmd_copy[i] = tolower(cmd_copy[i]);
+				for (int i = 0; cmd_copy[i]; i++) {
+					if (cmd_copy[i] >= 'A' && cmd_copy[i] <= 'Z') {
+						cmd_copy[i] = cmd_copy[i] - 'A' + 'a';
+					}
+				}
 				insert_at_head(&head, create_new_node(buffer));
 				 if (strlen(buffer) > 0 && strncmp(cmd_copy, "ls", 2) == 0)
 				{
@@ -297,16 +301,60 @@ int main(void)
 					printk("\n\t history            - \tdisplays commands history");
 					printk("\n\t reboot             - \treboots system");
 					printk("\n\t shutdown           - \tsends shutdown signal");
+					printk("\n\n\tUser Management:\n");
+					printk("\n\t whoami             - \tshow current user");
+					printk("\n\t users              - \tlist all users");
+					printk("\n\t adduser <name>     - \tcreate new user");
+					printk("\n\t deluser <name>     - \tdelete user (root only)");
+					printk("\n\t su <name>          - \tswitch to another user");
+					printk("\n\t sudo <command>     - \texecute command as root (root only)");
+					printk("\n\t logout             - \tlogout current user");
+					printk("\n\n\tFirewall:\n");
 					printk("\n\t fw list            - \tlist firewall rules");
 					printk("\n\t fw allow port N    - \tallow traffic on port N");
 					printk("\n\t fw allow ip A.B.C.D- \tallow traffic from IP");
 					printk("\n\t fw deny port N     - \tdeny traffic on port N"); 
 					printk("\n\t fw deny ip A.B.C.D - \tdeny traffic from IP");
+					printk("\n\n\tFile Management:\n");
+					printk("\n\t pwd                - \tprint working directory");
+					printk("\n\t cd <path>          - \tchange directory (limited)");
+					printk("\n\t stat <path>        - \tfile statistics");
+					printk("\n\t touch <path>       - \tcreate empty file");
+					printk("\n\t mkdir <path>       - \tcreate directory");
+					printk("\n\t echo <text> > <f>  - \twrite text to file");
+					printk("\n\t edit <path>        - \tview file contents");
 					printk("\n");
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "about") == 0)
 				{
 					about(current_version);
+				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "pwd") == 0)
+				{
+					printk("\n/\n");
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "cd ", 3) == 0)
+				{
+					printk("\n(cd not implemented in single-level filesystem)\n");
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "stat ", 5) == 0)
+				{
+					char *p = buffer + 5;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: stat <path>\n");
+					} else {
+						struct fs_stat st;
+						if (fs_stat(p, &st) != FS_OK) {
+							printk("\nFile not found: %s\n", p);
+						} else {
+							printk("\nFile: %s\n", p);
+							printk("  Size: %u bytes\n", (unsigned)st.size);
+							printk("  Owner: uid:%u gid:%u\n", st.uid, st.gid);
+							printk("  Mode: %o\n", st.mode);
+							printk("  Type: %s\n", (st.mode & 0x4000) ? "directory" : "file");
+						}
+					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "touch ", 6) == 0)
 				{
@@ -316,8 +364,15 @@ int main(void)
 						printk("\nUsage: touch <path>\n");
 					} else {
 						int r = fs_create(path, NULL, 0);
-						if (r == FS_OK) printk("\n(touch) created %s\n", path);
-						else printk("\n(touch) failed: %d\n", r);
+						if (r == FS_OK) {
+							const user_t *cur = user_current();
+							unsigned int uid = cur ? cur->uid : 0;
+							unsigned int gid = cur ? cur->gid : 0;
+							fs_chown(path, uid, gid);
+							printk("\nCreated: %s\n", path);
+						} else {
+							printk("\nFailed to create: %s (error: %d)\n", path, r);
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "mkdir ", 6) == 0)
@@ -328,8 +383,42 @@ int main(void)
 						printk("\nUsage: mkdir <path>\n");
 					} else {
 						int r = fs_mkdir(path);
-						if (r == FS_OK) printk("\n(mkdir) created %s\n", path);
-						else printk("\n(mkdir) failed: %d\n", r);
+						if (r == FS_OK) {
+							const user_t *cur = user_current();
+							unsigned int uid = cur ? cur->uid : 0;
+							unsigned int gid = cur ? cur->gid : 0;
+							fs_chown(path, uid, gid);
+							printk("\nDirectory created: %s\n", path);
+						} else {
+							printk("\nFailed to create directory: %s (error: %d)\n", path, r);
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "echo ", 5) == 0)
+				{
+					const char *text = buffer + 5;
+					while (*text == ' ') text++;
+					
+					/* Check if redirecting to file (> filename) */
+					char *redir = strchr(text, '>');
+					if (redir) {
+						*redir = '\0';
+						char *filename = redir + 1;
+						while (*filename == ' ') filename++;
+						
+						if (*filename == '\0') {
+							printk("\nUsage: echo <text> > <file>\n");
+						} else {
+							int c = fs_create(filename, (const uint8_t *)text, strlen(text));
+							if (c == FS_OK) {
+								printk("\nWritten to: %s\n", filename);
+							} else {
+								printk("\nFailed to write: %d\n", c);
+							}
+						}
+					} else {
+						/* Just print */
+						printk("\n%s\n", text);
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "rm ", 3) == 0)
@@ -340,8 +429,41 @@ int main(void)
 						printk("\nUsage: rm <path>\n");
 					} else {
 						int r = fs_unlink(path);
-						if (r == FS_OK) printk("\n(rm) removed %s\n", path);
-						else printk("\n(rm) failed: %d\n", r);
+						if (r == FS_OK) printk("\nRemoved: %s\n", path);
+						else printk("\nFailed to remove: %s (error: %d)\n", path, r);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "edit ", 5) == 0)
+				{
+					char *p = buffer + 5;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: edit <path>\n");
+					} else {
+						struct fs_stat st;
+						if (fs_stat(p, &st) != FS_OK) {
+							printk("\nFile not found: %s\n", p);
+						} else {
+							/* Read current content */
+							char *buf = kmalloc(st.size + 1);
+							if (!buf) {
+								printk("\nOut of memory\n");
+							} else {
+								fs_fd_t fd = fs_open(p, FS_O_RDONLY);
+								if (fd < 0) {
+									printk("\nCannot open file: %s\n", p);
+									kfree(buf);
+								} else {
+									int got = fs_read(fd, buf, st.size);
+									fs_close(fd);
+									printk("\n--- File: %s (size: %u) ---\n", p, (unsigned)st.size);
+									buf[got] = '\0';
+									printk("%s\n", buf);
+									printk("--- (View only mode) ---\n");
+									kfree(buf);
+								}
+							}
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "write ", 6) == 0)
@@ -478,6 +600,111 @@ int main(void)
 				else if (strlen(buffer) > 0 && strcmp(buffer, "fontcolor") == 0)
 				{
 					default_font_color = change_font_color();
+				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "whoami") == 0)
+				{
+					const user_t *cur = user_current();
+					if (cur) {
+						printk("\nCurrent user: %s (uid:%u)", cur->name, cur->uid);
+					} else {
+						printk("\nNo user logged in (guest)");
+					}
+				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "users") == 0)
+				{
+					printk("\nRegistered users:");
+					user_list_all();
+					printk("\n");
+				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "logout") == 0)
+				{
+					user_logout();
+					printk("\nLogged out successfully\n");
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "adduser ", 8) == 0)
+				{
+					char *p = buffer + 8;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: adduser <username>\n");
+					} else {
+						char *username = p;
+						char passwd[USER_PASS_MAX];
+						/* Get password interactively */
+						printk("\nEnter password: ");
+						int i = 0;
+						char c;
+						while ((c = getch_blocking()) != '\n' && c != '\r' && i < USER_PASS_MAX-1) {
+							passwd[i++] = c;
+							printk("*");
+						}
+						passwd[i] = '\0';
+						printk("\n");
+						/* Try to create user */
+						int ur = user_add(username, passwd);
+						if (ur == 0) printk("User created successfully\n");
+						else if (ur == -2) printk("Error: User database full\n");
+						else if (ur == -3) printk("Error: User already exists\n");
+						else printk("Error: Failed to create user: %d\n", ur);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "deluser ", 8) == 0)
+				{
+					/* Only root can delete users */
+					if (!user_is_root()) {
+						printk("\nError: Only root can delete users\n");
+					} else {
+						char *p = buffer + 8;
+						while (*p == ' ') p++;
+						if (*p == '\0') {
+							printk("\nUsage: deluser <username>\n");
+						} else {
+							int ur = user_delete(p);
+							if (ur == 0) printk("\nUser deleted successfully\n");
+							else if (ur == -2) printk("\nError: Cannot delete current user\n");
+							else printk("\nError: User not found\n");
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "su ", 3) == 0)
+				{
+					char *p = buffer + 3;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: su <username>\n");
+					} else {
+						char *username = p;
+						char passwd[USER_PASS_MAX];
+						printk("\nPassword: ");
+						int i = 0;
+						char c;
+						while ((c = getch_blocking()) != '\n' && c != '\r' && i < USER_PASS_MAX-1) {
+							passwd[i++] = c;
+							printk("*");
+						}
+						passwd[i] = '\0';
+						printk("\n");
+						int ur = user_switch(username, passwd);
+						if (ur == 0) {
+							const user_t *cur = user_current();
+							printk("Switched to user: %s\n", cur->name);
+						} else {
+							printk("Authentication failed\n");
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "sudo ", 5) == 0)
+				{
+					if (!user_is_root()) {
+						printk("\nError: Only root can use sudo\n");
+					} else {
+						/* Just execute as current user (root) */
+						char *cmd = buffer + 5;
+						while (*cmd == ' ') cmd++;
+						printk("\nExecuting as root: %s\n", cmd);
+						/* The command would be processed in the next iteration */
+						/* For now, just acknowledge */
+					}
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "clear") == 0)
 				{
@@ -657,31 +884,7 @@ int main(void)
 					}
 				}
 			}
-			else if (strlen(buffer) > 0 && strncmp(buffer, "adduser ", 8) == 0)
-			{
-				char *p = buffer + 8;
-				while (*p == ' ') p++;
-				if (*p == '\0') {
-					printk("\nUsage: adduser <username>\n");
-				} else {
-					char *username = p;
-					char passwd[USER_PASS_MAX];
-					while (*username == ' ') username++;
-					/* Get password interactively */
-					printk("\nEnter password: ");
-					int i = 0;
-					char c;
-					while ((c = getch_blocking()) != '\n' && c != '\r' && i < USER_PASS_MAX-1) {
-						passwd[i++] = c;
-						printk("*"); /* echo asterisk */
-					}
-					passwd[i] = '\0';
-					/* Try to create user */
-					int ur = user_add(username, passwd);
-					if (ur != 0) printk("\nFailed to create user: %d\n", ur);
-					else printk("\nUser created successfully\n");
-				}
-			}
+
 			else if (strlen(buffer) > 0 && strncmp(buffer, "truncate ", 9) == 0)
 			{
 				char *p = buffer + 9;

@@ -113,3 +113,119 @@ void user_logout(void)
 {
     current = -1;
 }
+
+int user_is_root(void)
+{
+    if (current < 0 || current >= user_count) return 0;
+    return (users[current].uid == 0) ? 1 : 0;
+}
+
+const user_t *user_get_by_name(const char *name)
+{
+    if (!name) return NULL;
+    for (int i = 0; i < user_count; ++i) {
+        if (strcmp(users[i].name, name) == 0) {
+            return &users[i];
+        }
+    }
+    return NULL;
+}
+
+int user_add(const char *name, const char *password)
+{
+    if (!name || !password) return -1;
+    if (user_count >= MAX_USERS) return -2;
+    
+    /* Check if user already exists */
+    for (int i = 0; i < user_count; ++i) {
+        if (strcmp(users[i].name, name) == 0) return -3;
+    }
+    
+    /* Add new user */
+    user_t *u = &users[user_count++];
+    strncpy(u->name, name, USER_NAME_MAX-1);
+    u->name[USER_NAME_MAX-1] = '\0';
+    
+    /* Hash password with SHA-256 */
+    char hash[65];
+    if (sha256_hex(password, hash, sizeof(hash)) != 0) {
+        user_count--;
+        return -4;
+    }
+    strncpy(u->passwd, hash, USER_PASS_MAX-1);
+    u->passwd[USER_PASS_MAX-1] = '\0';
+    
+    /* Assign uid/gid automatically */
+    u->uid = user_count;  /* Simple auto-increment */
+    u->gid = user_count;
+    
+    return 0;
+}
+
+int user_switch(const char *name, const char *password)
+{
+    if (!name || !password) return -1;
+    for (int i = 0; i < user_count; ++i) {
+        if (strcmp(users[i].name, name) == 0) {
+            const char *stored = users[i].passwd;
+            size_t sl = strlen(stored);
+            if (sl == 64) {
+                bool ishex = true;
+                for (size_t j = 0; j < 64; ++j) {
+                    char c = stored[j];
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) { 
+                        ishex = false; 
+                        break; 
+                    }
+                }
+                if (ishex) {
+                    char out[65];
+                    if (sha256_hex(password, out, sizeof(out)) == 0 && strcmp(out, stored) == 0) {
+                        current = i;
+                        return 0;
+                    }
+                    return -1;
+                }
+            }
+            if (strcmp(stored, password) == 0) {
+                current = i;
+                return 0;
+            }
+            return -1;
+        }
+    }
+    return -1;
+}
+
+void user_list_all(void)
+{
+    for (int i = 0; i < user_count; ++i) {
+        char marker = (i == current) ? '*' : ' ';
+        printk("\n  %c %s (uid:%u gid:%u)", marker, users[i].name, users[i].uid, users[i].gid);
+    }
+    if (user_count == 0) {
+        printk("\n  (no users)");
+    }
+}
+
+int user_delete(const char *name)
+{
+    if (!name) return -1;
+    for (int i = 0; i < user_count; ++i) {
+        if (strcmp(users[i].name, name) == 0) {
+            /* Don't allow deleting current user */
+            if (i == current) return -2;
+            /* Shift users down manually */
+            if (i < user_count - 1) {
+                for (int j = i; j < user_count - 1; j++) {
+                    users[j] = users[j + 1];
+                }
+            }
+            user_count--;
+            /* Adjust current index if needed */
+            if (current > i) current--;
+            return 0;
+        }
+    }
+    return -1;
+}
