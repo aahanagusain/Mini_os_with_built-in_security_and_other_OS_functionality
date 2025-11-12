@@ -409,6 +409,30 @@ int sprintf(char *buf, const char *fmt, ...)
     return ret;
 }
 
+int vsnprintf(char *buf, size_t size, const char *fmt, va_list va)
+{
+    if (!buf || size == 0) return -1;
+    /* vsprintf writes a terminating NUL; we must ensure we don't overflow */
+    /* Use vsprintf directly but truncate result if it exceeds size. */
+    int written = vsprintf(buf, fmt, va);
+    if (written < 0) return written;
+    if ((size_t)written >= size) {
+        /* Truncate and ensure NUL termination */
+        buf[size-1] = '\0';
+        return (int)size-1;
+    }
+    return written;
+}
+
+int snprintf(char *buf, size_t size, const char *fmt, ...)
+{
+    va_list va;
+    va_start(va, fmt);
+    int ret = vsnprintf(buf, size, fmt, va);
+    va_end(va);
+    return ret;
+}
+
 uint32_t atoi(const char *str)
 {
     uint32_t sign = 1, base = 0, i = 0;

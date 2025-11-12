@@ -32,9 +32,89 @@ uint8_t scrolllock = false;
 uint8_t shift = false;
 char current_version[7];
 
-/* Pager: wait for pager key. Return 1 to continue, 0 to quit */
 /* forward declaration for blocking getchar used by pager */
 static char getch_blocking(void);
+
+/* Current working directory (simple normalized path) */
+static char cwd[256] = "/";
+
+/* Resolve a possibly-relative path into an absolute, normalized path.
+ * - input: user supplied path (absolute or relative)
+ * - out: buffer to receive absolute path
+ * Returns 0 on success, -1 on error (output buffer too small)
+ */
+static int resolve_path(const char *input, char *out, size_t outsz)
+{
+	if (!input || !out || outsz == 0) return -1;
+	/* If input is absolute, start from it; otherwise start from cwd */
+	char tmp[1024];
+	if (input[0] == '/') {
+		strncpy(tmp, input, sizeof(tmp)-1);
+		tmp[sizeof(tmp)-1] = '\0';
+	} else {
+		/* join cwd and input */
+		if (strcmp(cwd, "/") == 0) {
+			snprintf(tmp, sizeof(tmp), "/%s", input);
+		} else {
+			snprintf(tmp, sizeof(tmp), "%s/%s", cwd, input);
+		}
+	}
+
+	/* Normalize: collapse multiple slashes, resolve . and .. */
+	char outbuf[1024];
+	size_t outi = 0;
+	const char *p = tmp;
+	/* ensure starts with slash */
+	if (*p != '/') {
+		if (outsz < 2) return -1;
+		out[0] = '/'; out[1] = '\0';
+		return 0;
+	}
+
+	/* Use a stack of path components */
+	const char *seg_start = p + 1;
+	char components[64][128];
+	int comp_count = 0;
+
+	while (1) {
+		const char *slash = strchr(seg_start, '/');
+		size_t len = slash ? (size_t)(slash - seg_start) : strlen(seg_start);
+		if (len == 0) {
+			/* empty segment (due to //) */
+		} else if (len == 1 && seg_start[0] == '.') {
+			/* skip */
+		} else if (len == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
+			if (comp_count > 0) comp_count--; /* pop */
+		} else {
+			if (comp_count < (int)(sizeof(components)/sizeof(components[0]))) {
+				size_t copylen = len < sizeof(components[0])-1 ? len : sizeof(components[0])-1;
+				memcpy(components[comp_count], seg_start, copylen);
+				components[comp_count][copylen] = '\0';
+				comp_count++;
+			}
+		}
+		if (!slash) break;
+		seg_start = slash + 1;
+		if (*seg_start == '\0') break;
+	}
+
+	/* Rebuild normalized path */
+	if (comp_count == 0) {
+		if (outsz < 2) return -1;
+		strcpy(out, "/");
+		return 0;
+	}
+	size_t pos = 0;
+	for (int i = 0; i < comp_count; ++i) {
+		size_t need = strlen(components[i]) + 1; /* '/' + seg */
+		if (pos + need + 1 > outsz) return -1;
+		out[pos++] = '/';
+		strcpy(out + pos, components[i]);
+		pos += strlen(components[i]);
+	}
+	out[pos] = '\0';
+	return 0;
+}
 
 static int pager_wait_key(void)
 {
@@ -190,13 +270,15 @@ int main(void)
 					}
 				}
 				insert_at_head(&head, create_new_node(buffer));
-				 if (strlen(buffer) > 0 && strncmp(cmd_copy, "ls", 2) == 0)
+				if (strlen(buffer) > 0 && strncmp(cmd_copy, "ls", 2) == 0)
 				{
 					/* support: ls [path] -> list immediate children using fs_listdir */
 					const struct fs_file *f;
 					char *p = buffer + 2;
 					while (*p == ' ') p++;
+					char rpath[256];
 					const char *path = (*p == '\0') ? "/" : p;
+					if (resolve_path(path, rpath, sizeof(rpath)) == 0) path = rpath; else path = "/";
 					unsigned int idx = 0;
 					int found = 0;
 					while (fs_listdir(path, idx, &f) == FS_OK) {
@@ -338,11 +420,28 @@ int main(void)
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "pwd") == 0)
 				{
-					printk("\n/\n");
+					printk("\n%s\n", cwd);
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "cd ", 3) == 0)
 				{
-					printk("\n(cd not implemented in single-level filesystem)\n");
+					char *p = buffer + 3; while (*p == ' ') p++;
+					if (*p == '\0') { printk("\nUsage: cd <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							struct fs_stat st;
+							if (fs_stat(rpath, &st) != FS_OK) { printk("\nDirectory not found: %s\n", rpath); }
+							else {
+								/* directory bit: 0x4000 (same as stat) */
+								if ((st.mode & 0x4000) == 0) { printk("\nNot a directory: %s\n", rpath); }
+								else {
+									strncpy(cwd, rpath, sizeof(cwd)-1); cwd[sizeof(cwd)-1] = '\0';
+									printk("\nChanged directory: %s\n", cwd);
+								}
+							}
+						}
+					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "stat ", 5) == 0)
 				{
@@ -351,11 +450,13 @@ int main(void)
 					if (*p == '\0') {
 						printk("\nUsage: stat <path>\n");
 					} else {
+						char rpath[256];
 						struct fs_stat st;
-						if (fs_stat(p, &st) != FS_OK) {
-							printk("\nFile not found: %s\n", p);
+						if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else if (fs_stat(rpath, &st) != FS_OK) {
+							printk("\nFile not found: %s\n", rpath);
 						} else {
-							printk("\nFile: %s\n", p);
+							printk("\nFile: %s\n", rpath);
 							printk("  Size: %u bytes\n", (unsigned)st.size);
 							printk("  Owner: uid:%u gid:%u\n", st.uid, st.gid);
 							printk("  Mode: %o\n", st.mode);
@@ -365,39 +466,43 @@ int main(void)
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "touch ", 6) == 0)
 				{
-					const char *path = buffer + 6;
-					while (*path == ' ') path++;
-					if (*path == '\0') {
-						printk("\nUsage: touch <path>\n");
-					} else {
-						int r = fs_create(path, NULL, 0);
-						if (r == FS_OK) {
-							const user_t *cur = user_current();
-							unsigned int uid = cur ? cur->uid : 0;
-							unsigned int gid = cur ? cur->gid : 0;
-							fs_chown(path, uid, gid);
-							printk("\nCreated: %s\n", path);
-						} else {
-							printk("\nFailed to create: %s (error: %d)\n", path, r);
+					char *path = buffer + 6; while (*path == ' ') path++;
+					if (*path == '\0') { printk("\nUsage: touch <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_create(rpath, NULL, 0);
+							if (r == FS_OK) {
+								const user_t *cur = user_current();
+								unsigned int uid = cur ? cur->uid : 0;
+								unsigned int gid = cur ? cur->gid : 0;
+								fs_chown(rpath, uid, gid);
+								printk("\nCreated: %s\n", rpath);
+							} else {
+								printk("\nFailed to create: %s (error: %d)\n", rpath, r);
+							}
 						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "mkdir ", 6) == 0)
 				{
-					const char *path = buffer + 6;
-					while (*path == ' ') path++;
-					if (*path == '\0') {
-						printk("\nUsage: mkdir <path>\n");
-					} else {
-						int r = fs_mkdir(path);
-						if (r == FS_OK) {
-							const user_t *cur = user_current();
-							unsigned int uid = cur ? cur->uid : 0;
-							unsigned int gid = cur ? cur->gid : 0;
-							fs_chown(path, uid, gid);
-							printk("\nDirectory created: %s\n", path);
-						} else {
-							printk("\nFailed to create directory: %s (error: %d)\n", path, r);
+					char *path = buffer + 6; while (*path == ' ') path++;
+					if (*path == '\0') { printk("\nUsage: mkdir <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_mkdir(rpath);
+							if (r == FS_OK) {
+								const user_t *cur = user_current();
+								unsigned int uid = cur ? cur->uid : 0;
+								unsigned int gid = cur ? cur->gid : 0;
+								fs_chown(rpath, uid, gid);
+								printk("\nDirectory created: %s\n", rpath);
+							} else {
+								printk("\nFailed to create directory: %s (error: %d)\n", rpath, r);
+							}
 						}
 					}
 				}
@@ -412,15 +517,16 @@ int main(void)
 						*redir = '\0';
 						char *filename = redir + 1;
 						while (*filename == ' ') filename++;
-						
+
 						if (*filename == '\0') {
 							printk("\nUsage: echo <text> > <file>\n");
 						} else {
-							int c = fs_create(filename, (const uint8_t *)text, strlen(text));
-							if (c == FS_OK) {
-								printk("\nWritten to: %s\n", filename);
-							} else {
-								printk("\nFailed to write: %d\n", c);
+							char rpath[256];
+							if (resolve_path(filename, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+							else {
+								int c = fs_create(rpath, (const uint8_t *)text, strlen(text));
+								if (c == FS_OK) { printk("\nWritten to: %s\n", rpath); }
+								else { printk("\nFailed to write: %d\n", c); }
 							}
 						}
 					} else {
@@ -430,14 +536,16 @@ int main(void)
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "rm ", 3) == 0)
 				{
-					const char *path = buffer + 3;
-					while (*path == ' ') path++;
-					if (*path == '\0') {
-						printk("\nUsage: rm <path>\n");
-					} else {
-						int r = fs_unlink(path);
-						if (r == FS_OK) printk("\nRemoved: %s\n", path);
-						else printk("\nFailed to remove: %s (error: %d)\n", path, r);
+					char *path = buffer + 3; while (*path == ' ') path++;
+					if (*path == '\0') { printk("\nUsage: rm <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_unlink(rpath);
+							if (r == FS_OK) printk("\nRemoved: %s\n", rpath);
+							else printk("\nFailed to remove: %s (error: %d)\n", rpath, r);
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "edit ", 5) == 0)
@@ -447,23 +555,21 @@ int main(void)
 					if (*p == '\0') {
 						printk("\nUsage: edit <path>\n");
 					} else {
+						char rpath[256];
 						struct fs_stat st;
-						if (fs_stat(p, &st) != FS_OK) {
-							printk("\nFile not found: %s\n", p);
-						} else {
+						if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else if (fs_stat(rpath, &st) != FS_OK) { printk("\nFile not found: %s\n", rpath); }
+						else {
 							/* Read current content */
 							char *buf = kmalloc(st.size + 1);
-							if (!buf) {
-								printk("\nOut of memory\n");
-							} else {
-								fs_fd_t fd = fs_open(p, FS_O_RDONLY);
-								if (fd < 0) {
-									printk("\nCannot open file: %s\n", p);
-									kfree(buf);
-								} else {
+							if (!buf) { printk("\nOut of memory\n"); }
+							else {
+								fs_fd_t fd = fs_open(rpath, FS_O_RDONLY);
+								if (fd < 0) { printk("\nCannot open file: %s\n", rpath); kfree(buf); }
+								else {
 									int got = fs_read(fd, buf, st.size);
 									fs_close(fd);
-									printk("\n--- File: %s (size: %u) ---\n", p, (unsigned)st.size);
+									printk("\n--- File: %s (size: %u) ---\n", rpath, (unsigned)st.size);
 									buf[got] = '\0';
 									printk("%s\n", buf);
 									printk("--- (View only mode) ---\n");
@@ -490,16 +596,18 @@ int main(void)
 							size_t tlen = strlen(text);
 							fs_fd_t fd = -1;
 
-							/* Try to open the file */
-							fd = fs_open(p, FS_O_RDONLY);
+							/* Resolve path and try to open the file */
+							char rpath[256];
+							if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); continue; }
+							fd = fs_open(rpath, FS_O_RDONLY);
 							if (fd < 0) {
 								/* not present: create empty overlay file first */
-								int c = fs_create(p, (const uint8_t *)"", 0);
+								int c = fs_create(rpath, (const uint8_t *)"", 0);
 								if (c != FS_OK) { 
 									printk("\n(write) create failed: %d\n", c);
 									continue; 
 								}
-								fd = fs_open(p, FS_O_RDONLY);
+								fd = fs_open(rpath, FS_O_RDONLY);
 								if (fd < 0) { 
 									printk("\n(write) open failed after create: %d\n", fd);
 									continue; 
@@ -511,16 +619,16 @@ int main(void)
 								/* packaged file: copy contents into overlay then retry */
 								fs_close(fd);
 								struct fs_stat st;
-								if (fs_stat(p, &st) == FS_OK && st.size > 0) {
+								if (fs_stat(rpath, &st) == FS_OK && st.size > 0) {
 									char *buf = kmalloc(st.size);
 									if (buf) {
-										fs_fd_t rfd = fs_open(p, FS_O_RDONLY);
+										fs_fd_t rfd = fs_open(rpath, FS_O_RDONLY);
 										if (rfd >= 0) {
 											int got = fs_read(rfd, buf, st.size);
 											fs_close(rfd);
 											/* create overlay copy */
-											fs_create(p, (const uint8_t *)buf, (size_t)got);
-											fd = fs_open(p, FS_O_RDONLY);
+											fs_create(rpath, (const uint8_t *)buf, (size_t)got);
+											fd = fs_open(rpath, FS_O_RDONLY);
 											if (fd >= 0) {
 												w = fs_write(fd, (const void *)text, tlen);
 											}
@@ -543,23 +651,25 @@ int main(void)
 					if (!q) { printk("\nUsage: cp <src> <dst>\n"); }
 					else {
 						*q = '\0';
-						char *src = p; char *dst = q + 1;
-						while (*dst == ' ') dst++;
+						char *src = p; char *dst = q + 1; while (*dst == ' ') dst++;
+						char rsrc[256], rdst[256];
+						if (resolve_path(src, rsrc, sizeof(rsrc)) != 0) { printk("\nPath too long\n"); continue; }
+						if (resolve_path(dst, rdst, sizeof(rdst)) != 0) { printk("\nPath too long\n"); continue; }
 						struct fs_stat st;
-						if (fs_stat(src, &st) != FS_OK) { printk("\n(cp) source not found\n"); }
+						if (fs_stat(rsrc, &st) != FS_OK) { printk("\n(cp) source not found\n"); }
 						else {
 							char *buf = kmalloc(st.size);
 							if (!buf) { printk("\n(cp) oom\n"); }
 							else {
-								fs_fd_t r = fs_open(src, FS_O_RDONLY);
+								fs_fd_t r = fs_open(rsrc, FS_O_RDONLY);
 								if (r < 0) { printk("\n(cp) open read failed\n"); kfree(buf); }
 								else {
 									int got = fs_read(r, buf, st.size);
 									fs_close(r);
 									if (got < 0) { printk("\n(cp) read failed\n"); kfree(buf); }
 									else {
-										int c = fs_create(dst, (const uint8_t *)buf, (size_t)got);
-										if (c == FS_OK) printk("\n(cp) %s -> %s\n", src, dst);
+										int c = fs_create(rdst, (const uint8_t *)buf, (size_t)got);
+										if (c == FS_OK) printk("\n(cp) %s -> %s\n", rsrc, rdst);
 										else printk("\n(cp) create failed: %d\n", c);
 										kfree(buf);
 									}
@@ -579,8 +689,12 @@ int main(void)
 						/* parse mode: octal if starts with 0 */
 						int mode = 0; int base = 10; if (mstr[0] == '0') base = 8;
 						for (char *c = mstr; *c; ++c) { if (*c >= '0' && *c <= '9') mode = mode * base + (*c - '0'); }
-						int r = fs_chmod(path, (unsigned int)mode);
-						if (r == FS_OK) printk("\n(chmod) %s -> %o\n", path, mode); else printk("\n(chmod) failed: %d\n", r);
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_chmod(rpath, (unsigned int)mode);
+							if (r == FS_OK) printk("\n(chmod) %s -> %o\n", rpath, mode); else printk("\n(chmod) failed: %d\n", r);
+						}
 					}
 				}
 
@@ -600,8 +714,12 @@ int main(void)
 							char *sp2 = strchr(rest, ' ');
 							if (!sp2) { printk("\nUsage: chown <uid> <gid> <path>\n"); continue; }
 							*sp2 = '\0'; uid = (unsigned int)atoi(arg); gid = (unsigned int)atoi(rest); rest = sp2 + 1; while (*rest == ' ') rest++; }
-						int r = fs_chown(rest, uid, gid);
-						if (r == FS_OK) printk("\n(chown) %s -> %u:%u\n", rest, uid, gid); else printk("\n(chown) failed: %d\n", r);
+						char rpath[256];
+						if (resolve_path(rest, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_chown(rpath, uid, gid);
+							if (r == FS_OK) printk("\n(chown) %s -> %u:%u\n", rpath, uid, gid); else printk("\n(chown) failed: %d\n", r);
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "fontcolor") == 0)
@@ -1010,9 +1128,14 @@ int main(void)
 						if (*new == '\0') {
 							printk("\nUsage: mv <oldpath> <newpath>\n");
 						} else {
-							int r = fs_rename(old, new);
-							if (r == FS_OK) printk("\n(mv) renamed %s -> %s\n", old, new);
-							else printk("\n(mv) failed: %d\n", r);
+							char rold[256], rnew[256];
+							if (resolve_path(old, rold, sizeof(rold)) != 0) { printk("\nPath too long\n"); }
+							else if (resolve_path(new, rnew, sizeof(rnew)) != 0) { printk("\nPath too long\n"); }
+							else {
+								int r = fs_rename(rold, rnew);
+								if (r == FS_OK) printk("\n(mv) renamed %s -> %s\n", rold, rnew);
+								else printk("\n(mv) failed: %d\n", r);
+							}
 						}
 					}
 				}
@@ -1039,64 +1162,74 @@ int main(void)
 							if (*num == '-') { neg = 1; num++; }
 							while (*num >= '0' && *num <= '9') { val = val * 10 + (*num - '0'); num++; }
 							if (neg) val = -val;
-							int r = fs_truncate(path, (size_t)val);
-							if (r == FS_OK) printk("\n(truncate) %s => %d\n", path, val);
-							else printk("\n(truncate) failed: %d\n", r);
+							char rpath[256];
+							if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+							else {
+								int r = fs_truncate(rpath, (size_t)val);
+								if (r == FS_OK) printk("\n(truncate) %s => %d\n", rpath, val);
+								else printk("\n(truncate) failed: %d\n", r);
+							}
 						}
 					}
 				}
 			}
 			else if (strlen(buffer) > 0 && strncmp(buffer, "rmdir ", 6) == 0)
 			{
-				const char *path = buffer + 6;
-				while (*path == ' ') path++;
-				if (*path == '\0') {
-					printk("\nUsage: rmdir <path>\n");
-				} else {
-					int r = fs_rmdir(path);
-					if (r == FS_OK) printk("\n(rmdir) removed %s\n", path);
+				char *path = buffer + 6; while (*path == ' ') path++;
+				if (*path == '\0') { printk("\nUsage: rmdir <path>\n"); }
+				else {
+					char rpath[256];
+					if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+					else {
+						int r = fs_rmdir(rpath);
+						if (r == FS_OK) printk("\n(rmdir) removed %s\n", rpath);
 					else printk("\n(rmdir) failed: %d\n", r);
+					}
 				}
 			}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "cat ", 4) == 0)
 				{
 					/* cat <path> - print file contents from embedded initrd */
-					const char *path = buffer + 4;
+					char *path = buffer + 4;
 					/* trim leading spaces */
 					while (*path == ' ') path++;
 					if (*path == '\0') {
 						printk("\nUsage: cat <path>\n");
 					} else {
-						fs_fd_t fd = fs_open(path, FS_O_RDONLY);
-						if (fd < 0) {
-							printk("\n(cat) %s: not found\n", path);
-						} else {
-							char fbuf[256];
-							int r;
-							int line_count = 0;
-							while ((r = fs_read(fd, fbuf, sizeof(fbuf)-1)) > 0) {
-								fbuf[r] = '\0';
-								/* print and count newlines for pagination */
-								for (int i = 0; i < r; ++i) {
-									char ch = fbuf[i];
-									char s[2] = {ch, '\0'};
-									printk("%s", s);
-									if (ch == '\n') {
-										line_count++;
-										if (line_count >= 20) {
-											printk("--More-- (space to continue, q to quit)");
-											if (!pager_wait_key()) { r = -1; break; }
-											line_count = 0;
-											printk("\n");
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							fs_fd_t fd = fs_open(rpath, FS_O_RDONLY);
+							if (fd < 0) {
+								printk("\n(cat) %s: not found\n", rpath);
+							} else {
+								char fbuf[256];
+								int r;
+								int line_count = 0;
+								while ((r = fs_read(fd, fbuf, sizeof(fbuf)-1)) > 0) {
+									fbuf[r] = '\0';
+									/* print and count newlines for pagination */
+									for (int i = 0; i < r; ++i) {
+										char ch = fbuf[i];
+										char s[2] = {ch, '\0'};
+										printk("%s", s);
+										if (ch == '\n') {
+											line_count++;
+											if (line_count >= 20) {
+												printk("--More-- (space to continue, q to quit)");
+												if (!pager_wait_key()) { r = -1; break; }
+												line_count = 0;
+												printk("\n");
+											}
 										}
 									}
 								}
+								if (r < 0) {
+									printk("\n(cat) read error or cancelled\n");
+								}
+								fs_close(fd);
+								printk("\n");
 							}
-							if (r < 0) {
-								printk("\n(cat) read error or cancelled\n");
-							}
-							fs_close(fd);
-							printk("\n");
 						}
 					}
 				}
@@ -1131,8 +1264,7 @@ int main(void)
 				{
 					c = capslockmap[byte];
 				}
-				else if (shift)
-				{
+				else if (shift){
 					c = shiftmap[byte];
 					shift = false;
 				}
