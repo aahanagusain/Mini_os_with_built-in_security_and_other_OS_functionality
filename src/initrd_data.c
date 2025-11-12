@@ -1,6 +1,6 @@
 #include "../include/fs.h"
 
-static const uint8_t file_6361bff0[] = {
+static const uint8_t file_16743c06[] = {
     87, 101, 108, 99, 111, 109, 101, 32, 116, 111, 32, 80, 114, 105, 109, 117,
     115, 79, 83, 33, 10, 10, 84, 104, 105, 115, 32, 105, 115, 32, 97, 32,
     116, 101, 115, 116, 32, 102, 105, 108, 101, 32, 102, 114, 111, 109, 32, 116,
@@ -16,7 +16,7 @@ static const uint8_t file_6361bff0[] = {
     111, 119, 32, 116, 104, 105, 115, 32, 102, 105, 108, 101, 41,
 };
     
-static const uint8_t file_49c01553[] = {
+static const uint8_t file_31b8ce77[] = {
     114, 111, 111, 116, 58, 52, 56, 49, 51, 52, 57, 52, 100, 49, 51, 55,
     101, 49, 54, 51, 49, 98, 98, 97, 51, 48, 49, 100, 53, 97, 99, 97,
     98, 54, 101, 55, 98, 98, 55, 97, 97, 55, 52, 99, 101, 49, 49, 56,
@@ -26,8 +26,8 @@ static const uint8_t file_49c01553[] = {
 };
     
 const struct fs_file initrd_files[] = {
-    { "/README.txt", file_6361bff0, 205, 1000, 1000, 420 },
-    { "/etc/passwd", file_49c01553, 93, 1000, 1000, 420 },
+    { "/README.txt", file_16743c06, 205, 1000, 1000, 420 },
+    { "/etc/passwd", file_31b8ce77, 93, 1000, 1000, 420 },
 };
 
 const unsigned int initrd_files_count = sizeof(initrd_files)/sizeof(initrd_files[0]);

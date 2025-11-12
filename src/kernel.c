@@ -18,6 +18,9 @@
 #include "../include/fs.h"
 #include "../include/user.h"
 #include "../include/gui.h"
+#include "../include/netsec.h"
+#include "../include/encrypt.h"
+#include "../include/compress.h"
 
 #define DEBUG false
 
@@ -29,9 +32,89 @@ uint8_t scrolllock = false;
 uint8_t shift = false;
 char current_version[7];
 
-/* Pager: wait for pager key. Return 1 to continue, 0 to quit */
 /* forward declaration for blocking getchar used by pager */
 static char getch_blocking(void);
+
+/* Current working directory (simple normalized path) */
+static char cwd[256] = "/";
+
+/* Resolve a possibly-relative path into an absolute, normalized path.
+ * - input: user supplied path (absolute or relative)
+ * - out: buffer to receive absolute path
+ * Returns 0 on success, -1 on error (output buffer too small)
+ */
+static int resolve_path(const char *input, char *out, size_t outsz)
+{
+	if (!input || !out || outsz == 0) return -1;
+	/* If input is absolute, start from it; otherwise start from cwd */
+	char tmp[1024];
+	if (input[0] == '/') {
+		strncpy(tmp, input, sizeof(tmp)-1);
+		tmp[sizeof(tmp)-1] = '\0';
+	} else {
+		/* join cwd and input */
+		if (strcmp(cwd, "/") == 0) {
+			snprintf(tmp, sizeof(tmp), "/%s", input);
+		} else {
+			snprintf(tmp, sizeof(tmp), "%s/%s", cwd, input);
+		}
+	}
+
+	/* Normalize: collapse multiple slashes, resolve . and .. */
+	char outbuf[1024];
+	size_t outi = 0;
+	const char *p = tmp;
+	/* ensure starts with slash */
+	if (*p != '/') {
+		if (outsz < 2) return -1;
+		out[0] = '/'; out[1] = '\0';
+		return 0;
+	}
+
+	/* Use a stack of path components */
+	const char *seg_start = p + 1;
+	char components[64][128];
+	int comp_count = 0;
+
+	while (1) {
+		const char *slash = strchr(seg_start, '/');
+		size_t len = slash ? (size_t)(slash - seg_start) : strlen(seg_start);
+		if (len == 0) {
+			/* empty segment (due to //) */
+		} else if (len == 1 && seg_start[0] == '.') {
+			/* skip */
+		} else if (len == 2 && seg_start[0] == '.' && seg_start[1] == '.') {
+			if (comp_count > 0) comp_count--; /* pop */
+		} else {
+			if (comp_count < (int)(sizeof(components)/sizeof(components[0]))) {
+				size_t copylen = len < sizeof(components[0])-1 ? len : sizeof(components[0])-1;
+				memcpy(components[comp_count], seg_start, copylen);
+				components[comp_count][copylen] = '\0';
+				comp_count++;
+			}
+		}
+		if (!slash) break;
+		seg_start = slash + 1;
+		if (*seg_start == '\0') break;
+	}
+
+	/* Rebuild normalized path */
+	if (comp_count == 0) {
+		if (outsz < 2) return -1;
+		strcpy(out, "/");
+		return 0;
+	}
+	size_t pos = 0;
+	for (int i = 0; i < comp_count; ++i) {
+		size_t need = strlen(components[i]) + 1; /* '/' + seg */
+		if (pos + need + 1 > outsz) return -1;
+		out[pos++] = '/';
+		strcpy(out + pos, components[i]);
+		pos += strlen(components[i]);
+	}
+	out[pos] = '\0';
+	return 0;
+}
 
 static int pager_wait_key(void)
 {
@@ -76,6 +159,7 @@ int main(void)
 	char buffer[BUFFER_SIZE];
 	uint8_t byte = 0;
 	node_t *head = NULL;
+	memset(buffer, 0, BUFFER_SIZE);
 
 	terminal_initialize(default_font_color, COLOR_BLACK);
 	terminal_set_colors(COLOR_LIGHT_GREEN, COLOR_BLACK);
@@ -114,6 +198,12 @@ int main(void)
 	printk("\nInitializing user database...");
 	int ur = user_init_from_file("/etc/passwd");
 	if (ur != 0) printk("failed: %d\n", ur);
+	else printk("ok\n");
+
+	/* Initialize network security */
+	printk("Initializing network security...");
+	int nr = netsec_init();
+	if (nr != 0) printk("failed: %d\n", nr);
 	else printk("ok\n");
 	gui_init();
 
@@ -171,15 +261,24 @@ int main(void)
 		{
 			if (byte == ENTER)
 			{
-				strcpy(buffer, tolower(buffer));
+				char cmd_copy[BUFFER_SIZE];
+				strncpy(cmd_copy, buffer, BUFFER_SIZE-1);
+				cmd_copy[BUFFER_SIZE-1] = '\0';
+				for (int i = 0; cmd_copy[i]; i++) {
+					if (cmd_copy[i] >= 'A' && cmd_copy[i] <= 'Z') {
+						cmd_copy[i] = cmd_copy[i] - 'A' + 'a';
+					}
+				}
 				insert_at_head(&head, create_new_node(buffer));
-				 if (strlen(buffer) > 0 && strncmp(buffer, "ls", 2) == 0)
+				if (strlen(buffer) > 0 && strncmp(cmd_copy, "ls", 2) == 0)
 				{
 					/* support: ls [path] -> list immediate children using fs_listdir */
 					const struct fs_file *f;
 					char *p = buffer + 2;
 					while (*p == ' ') p++;
+					char rpath[256];
 					const char *path = (*p == '\0') ? "/" : p;
+					if (resolve_path(path, rpath, sizeof(rpath)) == 0) path = rpath; else path = "/";
 					unsigned int idx = 0;
 					int found = 0;
 					while (fs_listdir(path, idx, &f) == FS_OK) {
@@ -286,46 +385,198 @@ int main(void)
 					printk("\n\t history            - \tdisplays commands history");
 					printk("\n\t reboot             - \treboots system");
 					printk("\n\t shutdown           - \tsends shutdown signal");
+					printk("\n\n\tUser Management:\n");
+					printk("\n\t whoami             - \tshow current user");
+					printk("\n\t users              - \tlist all users");
+					printk("\n\t adduser <name>     - \tcreate new user");
+					printk("\n\t deluser <name>     - \tdelete user (root only)");
+					printk("\n\t su <name>          - \tswitch to another user");
+					printk("\n\t sudo <command>     - \texecute command as root (root only)");
+					printk("\n\t logout             - \tlogout current user");
+					printk("\n\n\tFirewall:\n");
+					printk("\n\t fw list            - \tlist firewall rules");
+					printk("\n\t fw allow port N    - \tallow traffic on port N");
+					printk("\n\t fw allow ip A.B.C.D- \tallow traffic from IP");
+					printk("\n\t fw deny port N     - \tdeny traffic on port N"); 
+					printk("\n\t fw deny ip A.B.C.D - \tdeny traffic from IP");
+					printk("\n\n\tFile Management:\n");
+					printk("\n\t pwd                - \tprint working directory");
+					printk("\n\t cd <path>          - \tchange directory (limited)");
+					printk("\n\t stat <path>        - \tfile statistics");
+					printk("\n\t touch <path>       - \tcreate empty file");
+					printk("\n\t mkdir <path>       - \tcreate directory");
+					printk("\n\t echo <text> > <f>  - \twrite text to file");
+					printk("\n\t edit <path>        - \tview file contents");
+					printk("\n\n\tEncryption/Compression:\n");
+					printk("\n\t encrypt <s> <d> <k>- \tencrypt file (XOR cipher)");
+					printk("\n\t decrypt <s> <d> <k>- \tdecrypt file (XOR cipher)");
+					printk("\n\t compress <s> <d>  - \tcompress file (RLE)");
+					printk("\n\t decompress <s> <d>- \tdecompress file (RLE)");
 					printk("\n");
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "about") == 0)
 				{
 					about(current_version);
 				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "pwd") == 0)
+				{
+					printk("\n%s\n", cwd);
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "cd ", 3) == 0)
+				{
+					char *p = buffer + 3; while (*p == ' ') p++;
+					if (*p == '\0') { printk("\nUsage: cd <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							struct fs_stat st;
+							if (fs_stat(rpath, &st) != FS_OK) { printk("\nDirectory not found: %s\n", rpath); }
+							else {
+								/* directory bit: 0x4000 (same as stat) */
+								if ((st.mode & 0x4000) == 0) { printk("\nNot a directory: %s\n", rpath); }
+								else {
+									strncpy(cwd, rpath, sizeof(cwd)-1); cwd[sizeof(cwd)-1] = '\0';
+									printk("\nChanged directory: %s\n", cwd);
+								}
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "stat ", 5) == 0)
+				{
+					char *p = buffer + 5;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: stat <path>\n");
+					} else {
+						char rpath[256];
+						struct fs_stat st;
+						if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else if (fs_stat(rpath, &st) != FS_OK) {
+							printk("\nFile not found: %s\n", rpath);
+						} else {
+							printk("\nFile: %s\n", rpath);
+							printk("  Size: %u bytes\n", (unsigned)st.size);
+							printk("  Owner: uid:%u gid:%u\n", st.uid, st.gid);
+							printk("  Mode: %o\n", st.mode);
+							printk("  Type: %s\n", (st.mode & 0x4000) ? "directory" : "file");
+						}
+					}
+				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "touch ", 6) == 0)
 				{
-					const char *path = buffer + 6;
-					while (*path == ' ') path++;
-					if (*path == '\0') {
-						printk("\nUsage: touch <path>\n");
-					} else {
-						int r = fs_create(path, NULL, 0);
-						if (r == FS_OK) printk("\n(touch) created %s\n", path);
-						else printk("\n(touch) failed: %d\n", r);
+					char *path = buffer + 6; while (*path == ' ') path++;
+					if (*path == '\0') { printk("\nUsage: touch <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_create(rpath, NULL, 0);
+							if (r == FS_OK) {
+								const user_t *cur = user_current();
+								unsigned int uid = cur ? cur->uid : 0;
+								unsigned int gid = cur ? cur->gid : 0;
+								fs_chown(rpath, uid, gid);
+								printk("\nCreated: %s\n", rpath);
+							} else {
+								printk("\nFailed to create: %s (error: %d)\n", rpath, r);
+							}
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "mkdir ", 6) == 0)
 				{
-					const char *path = buffer + 6;
-					while (*path == ' ') path++;
-					if (*path == '\0') {
-						printk("\nUsage: mkdir <path>\n");
+					char *path = buffer + 6; while (*path == ' ') path++;
+					if (*path == '\0') { printk("\nUsage: mkdir <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_mkdir(rpath);
+							if (r == FS_OK) {
+								const user_t *cur = user_current();
+								unsigned int uid = cur ? cur->uid : 0;
+								unsigned int gid = cur ? cur->gid : 0;
+								fs_chown(rpath, uid, gid);
+								printk("\nDirectory created: %s\n", rpath);
+							} else {
+								printk("\nFailed to create directory: %s (error: %d)\n", rpath, r);
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "echo ", 5) == 0)
+				{
+					const char *text = buffer + 5;
+					while (*text == ' ') text++;
+					
+					/* Check if redirecting to file (> filename) */
+					char *redir = strchr(text, '>');
+					if (redir) {
+						*redir = '\0';
+						char *filename = redir + 1;
+						while (*filename == ' ') filename++;
+
+						if (*filename == '\0') {
+							printk("\nUsage: echo <text> > <file>\n");
+						} else {
+							char rpath[256];
+							if (resolve_path(filename, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+							else {
+								int c = fs_create(rpath, (const uint8_t *)text, strlen(text));
+								if (c == FS_OK) { printk("\nWritten to: %s\n", rpath); }
+								else { printk("\nFailed to write: %d\n", c); }
+							}
+						}
 					} else {
-						int r = fs_mkdir(path);
-						if (r == FS_OK) printk("\n(mkdir) created %s\n", path);
-						else printk("\n(mkdir) failed: %d\n", r);
+						/* Just print */
+						printk("\n%s\n", text);
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "rm ", 3) == 0)
 				{
-					const char *path = buffer + 3;
-					while (*path == ' ') path++;
-					if (*path == '\0') {
-						printk("\nUsage: rm <path>\n");
+					char *path = buffer + 3; while (*path == ' ') path++;
+					if (*path == '\0') { printk("\nUsage: rm <path>\n"); }
+					else {
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_unlink(rpath);
+							if (r == FS_OK) printk("\nRemoved: %s\n", rpath);
+							else printk("\nFailed to remove: %s (error: %d)\n", rpath, r);
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "edit ", 5) == 0)
+				{
+					char *p = buffer + 5;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: edit <path>\n");
 					} else {
-						int r = fs_unlink(path);
-						if (r == FS_OK) printk("\n(rm) removed %s\n", path);
-						else printk("\n(rm) failed: %d\n", r);
+						char rpath[256];
+						struct fs_stat st;
+						if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else if (fs_stat(rpath, &st) != FS_OK) { printk("\nFile not found: %s\n", rpath); }
+						else {
+							/* Read current content */
+							char *buf = kmalloc(st.size + 1);
+							if (!buf) { printk("\nOut of memory\n"); }
+							else {
+								fs_fd_t fd = fs_open(rpath, FS_O_RDONLY);
+								if (fd < 0) { printk("\nCannot open file: %s\n", rpath); kfree(buf); }
+								else {
+									int got = fs_read(fd, buf, st.size);
+									fs_close(fd);
+									printk("\n--- File: %s (size: %u) ---\n", rpath, (unsigned)st.size);
+									buf[got] = '\0';
+									printk("%s\n", buf);
+									printk("--- (View only mode) ---\n");
+									kfree(buf);
+								}
+							}
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "write ", 6) == 0)
@@ -343,14 +594,24 @@ int main(void)
 							char *text = q + 1;
 							while (*text == ' ') text++;
 							size_t tlen = strlen(text);
-							/* Try to open the file */
-							fs_fd_t fd = fs_open(p, FS_O_RDONLY);
+							fs_fd_t fd = -1;
+
+							/* Resolve path and try to open the file */
+							char rpath[256];
+							if (resolve_path(p, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); continue; }
+							fd = fs_open(rpath, FS_O_RDONLY);
 							if (fd < 0) {
 								/* not present: create empty overlay file first */
-								int c = fs_create(p, (const uint8_t *)"", 0);
-								if (c != FS_OK) { printk("\n(write) create failed: %d\n", c); continue; }
-								fd = fs_open(p, FS_O_RDONLY);
-								if (fd < 0) { printk("\n(write) open failed after create: %d\n", fd); continue; }
+								int c = fs_create(rpath, (const uint8_t *)"", 0);
+								if (c != FS_OK) { 
+									printk("\n(write) create failed: %d\n", c);
+									continue; 
+								}
+								fd = fs_open(rpath, FS_O_RDONLY);
+								if (fd < 0) { 
+									printk("\n(write) open failed after create: %d\n", fd);
+									continue; 
+								}
 							}
 							/* Attempt to write (fs_write will fail with FS_EIO if the fd refers to a read-only packaged file) */
 							int w = fs_write(fd, (const void *)text, tlen);
@@ -358,16 +619,16 @@ int main(void)
 								/* packaged file: copy contents into overlay then retry */
 								fs_close(fd);
 								struct fs_stat st;
-								if (fs_stat(p, &st) == FS_OK && st.size > 0) {
+								if (fs_stat(rpath, &st) == FS_OK && st.size > 0) {
 									char *buf = kmalloc(st.size);
 									if (buf) {
-										fs_fd_t rfd = fs_open(p, FS_O_RDONLY);
+										fs_fd_t rfd = fs_open(rpath, FS_O_RDONLY);
 										if (rfd >= 0) {
 											int got = fs_read(rfd, buf, st.size);
 											fs_close(rfd);
 											/* create overlay copy */
-											fs_create(p, (const uint8_t *)buf, (size_t)got);
-											fd = fs_open(p, FS_O_RDONLY);
+											fs_create(rpath, (const uint8_t *)buf, (size_t)got);
+											fd = fs_open(rpath, FS_O_RDONLY);
 											if (fd >= 0) {
 												w = fs_write(fd, (const void *)text, tlen);
 											}
@@ -390,23 +651,25 @@ int main(void)
 					if (!q) { printk("\nUsage: cp <src> <dst>\n"); }
 					else {
 						*q = '\0';
-						char *src = p; char *dst = q + 1;
-						while (*dst == ' ') dst++;
+						char *src = p; char *dst = q + 1; while (*dst == ' ') dst++;
+						char rsrc[256], rdst[256];
+						if (resolve_path(src, rsrc, sizeof(rsrc)) != 0) { printk("\nPath too long\n"); continue; }
+						if (resolve_path(dst, rdst, sizeof(rdst)) != 0) { printk("\nPath too long\n"); continue; }
 						struct fs_stat st;
-						if (fs_stat(src, &st) != FS_OK) { printk("\n(cp) source not found\n"); }
+						if (fs_stat(rsrc, &st) != FS_OK) { printk("\n(cp) source not found\n"); }
 						else {
 							char *buf = kmalloc(st.size);
 							if (!buf) { printk("\n(cp) oom\n"); }
 							else {
-								fs_fd_t r = fs_open(src, FS_O_RDONLY);
+								fs_fd_t r = fs_open(rsrc, FS_O_RDONLY);
 								if (r < 0) { printk("\n(cp) open read failed\n"); kfree(buf); }
 								else {
 									int got = fs_read(r, buf, st.size);
 									fs_close(r);
 									if (got < 0) { printk("\n(cp) read failed\n"); kfree(buf); }
 									else {
-										int c = fs_create(dst, (const uint8_t *)buf, (size_t)got);
-										if (c == FS_OK) printk("\n(cp) %s -> %s\n", src, dst);
+										int c = fs_create(rdst, (const uint8_t *)buf, (size_t)got);
+										if (c == FS_OK) printk("\n(cp) %s -> %s\n", rsrc, rdst);
 										else printk("\n(cp) create failed: %d\n", c);
 										kfree(buf);
 									}
@@ -426,8 +689,12 @@ int main(void)
 						/* parse mode: octal if starts with 0 */
 						int mode = 0; int base = 10; if (mstr[0] == '0') base = 8;
 						for (char *c = mstr; *c; ++c) { if (*c >= '0' && *c <= '9') mode = mode * base + (*c - '0'); }
-						int r = fs_chmod(path, (unsigned int)mode);
-						if (r == FS_OK) printk("\n(chmod) %s -> %o\n", path, mode); else printk("\n(chmod) failed: %d\n", r);
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_chmod(rpath, (unsigned int)mode);
+							if (r == FS_OK) printk("\n(chmod) %s -> %o\n", rpath, mode); else printk("\n(chmod) failed: %d\n", r);
+						}
 					}
 				}
 
@@ -447,18 +714,358 @@ int main(void)
 							char *sp2 = strchr(rest, ' ');
 							if (!sp2) { printk("\nUsage: chown <uid> <gid> <path>\n"); continue; }
 							*sp2 = '\0'; uid = (unsigned int)atoi(arg); gid = (unsigned int)atoi(rest); rest = sp2 + 1; while (*rest == ' ') rest++; }
-						int r = fs_chown(rest, uid, gid);
-						if (r == FS_OK) printk("\n(chown) %s -> %u:%u\n", rest, uid, gid); else printk("\n(chown) failed: %d\n", r);
+						char rpath[256];
+						if (resolve_path(rest, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							int r = fs_chown(rpath, uid, gid);
+							if (r == FS_OK) printk("\n(chown) %s -> %u:%u\n", rpath, uid, gid); else printk("\n(chown) failed: %d\n", r);
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "fontcolor") == 0)
 				{
 					default_font_color = change_font_color();
 				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "whoami") == 0)
+				{
+					const user_t *cur = user_current();
+					if (cur) {
+						printk("\nCurrent user: %s (uid:%u)", cur->name, cur->uid);
+					} else {
+						printk("\nNo user logged in (guest)");
+					}
+				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "users") == 0)
+				{
+					printk("\nRegistered users:");
+					user_list_all();
+					printk("\n");
+				}
+				else if (strlen(buffer) > 0 && strcmp(buffer, "logout") == 0)
+				{
+					user_logout();
+					printk("\nLogged out successfully\n");
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "adduser ", 8) == 0)
+				{
+					char *p = buffer + 8;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: adduser <username>\n");
+					} else {
+						char *username = p;
+						char passwd[USER_PASS_MAX];
+						/* Get password interactively */
+						printk("\nEnter password: ");
+						int i = 0;
+						char c;
+						while ((c = getch_blocking()) != '\n' && c != '\r' && i < USER_PASS_MAX-1) {
+							passwd[i++] = c;
+							printk("*");
+						}
+						passwd[i] = '\0';
+						printk("\n");
+						/* Try to create user */
+						int ur = user_add(username, passwd);
+						if (ur == 0) printk("User created successfully\n");
+						else if (ur == -2) printk("Error: User database full\n");
+						else if (ur == -3) printk("Error: User already exists\n");
+						else printk("Error: Failed to create user: %d\n", ur);
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "deluser ", 8) == 0)
+				{
+					/* Only root can delete users */
+					if (!user_is_root()) {
+						printk("\nError: Only root can delete users\n");
+					} else {
+						char *p = buffer + 8;
+						while (*p == ' ') p++;
+						if (*p == '\0') {
+							printk("\nUsage: deluser <username>\n");
+						} else {
+							int ur = user_delete(p);
+							if (ur == 0) printk("\nUser deleted successfully\n");
+							else if (ur == -2) printk("\nError: Cannot delete current user\n");
+							else printk("\nError: User not found\n");
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "su ", 3) == 0)
+				{
+					char *p = buffer + 3;
+					while (*p == ' ') p++;
+					if (*p == '\0') {
+						printk("\nUsage: su <username>\n");
+					} else {
+						char *username = p;
+						char passwd[USER_PASS_MAX];
+						printk("\nPassword: ");
+						int i = 0;
+						char c;
+						while ((c = getch_blocking()) != '\n' && c != '\r' && i < USER_PASS_MAX-1) {
+							passwd[i++] = c;
+							printk("*");
+						}
+						passwd[i] = '\0';
+						printk("\n");
+						int ur = user_switch(username, passwd);
+						if (ur == 0) {
+							const user_t *cur = user_current();
+							printk("Switched to user: %s\n", cur->name);
+						} else {
+							printk("Authentication failed\n");
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "sudo ", 5) == 0)
+				{
+					if (!user_is_root()) {
+						printk("\nError: Only root can use sudo\n");
+					} else {
+						/* Just execute as current user (root) */
+						char *cmd = buffer + 5;
+						while (*cmd == ' ') cmd++;
+						printk("\nExecuting as root: %s\n", cmd);
+						/* The command would be processed in the next iteration */
+						/* For now, just acknowledge */
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "encrypt ", 8) == 0)
+				{
+					char *p = buffer + 8;
+					while (*p == ' ') p++;
+					
+					/* Parse: encrypt <srcfile> <dstfile> <key> */
+					char *src = p;
+					char *q1 = strchr(src, ' ');
+					if (!q1) {
+						printk("\nUsage: encrypt <srcfile> <dstfile> <key>\n");
+					} else {
+						*q1 = '\0';
+						char *dst = q1 + 1;
+						while (*dst == ' ') dst++;
+						
+						char *q2 = strchr(dst, ' ');
+						if (!q2) {
+							printk("\nUsage: encrypt <srcfile> <dstfile> <key>\n");
+						} else {
+							*q2 = '\0';
+							char *key = q2 + 1;
+							while (*key == ' ') key++;
+							
+							if (*key == '\0') {
+								printk("\nUsage: encrypt <srcfile> <dstfile> <key>\n");
+							} else {
+								int result = encrypt_file(src, dst, key);
+								if (result > 0) {
+									printk("\nFile encrypted successfully: %d bytes\n", result);
+								} else {
+									printk("\nEncryption failed: error %d\n", result);
+								}
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "decrypt ", 8) == 0)
+				{
+					char *p = buffer + 8;
+					while (*p == ' ') p++;
+					
+					/* Parse: decrypt <srcfile> <dstfile> <key> */
+					char *src = p;
+					char *q1 = strchr(src, ' ');
+					if (!q1) {
+						printk("\nUsage: decrypt <srcfile> <dstfile> <key>\n");
+					} else {
+						*q1 = '\0';
+						char *dst = q1 + 1;
+						while (*dst == ' ') dst++;
+						
+						char *q2 = strchr(dst, ' ');
+						if (!q2) {
+							printk("\nUsage: decrypt <srcfile> <dstfile> <key>\n");
+						} else {
+							*q2 = '\0';
+							char *key = q2 + 1;
+							while (*key == ' ') key++;
+							
+							if (*key == '\0') {
+								printk("\nUsage: decrypt <srcfile> <dstfile> <key>\n");
+							} else {
+								int result = decrypt_file(src, dst, key);
+								if (result > 0) {
+									printk("\nFile decrypted successfully: %d bytes\n", result);
+								} else {
+									printk("\nDecryption failed: error %d\n", result);
+								}
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "compress ", 9) == 0)
+				{
+					char *p = buffer + 9;
+					while (*p == ' ') p++;
+					
+					/* Parse: compress <srcfile> <dstfile> */
+					char *src = p;
+					char *q = strchr(src, ' ');
+					if (!q) {
+						printk("\nUsage: compress <srcfile> <dstfile>\n");
+					} else {
+						*q = '\0';
+						char *dst = q + 1;
+						while (*dst == ' ') dst++;
+						
+						if (*dst == '\0') {
+							printk("\nUsage: compress <srcfile> <dstfile>\n");
+						} else {
+							int result = compress_file(src, dst);
+							if (result > 0) {
+								printk("\nFile compressed successfully: %d bytes\n", result);
+							} else {
+								printk("\nCompression failed: error %d\n", result);
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "decompress ", 11) == 0)
+				{
+					char *p = buffer + 11;
+					while (*p == ' ') p++;
+					
+					/* Parse: decompress <srcfile> <dstfile> */
+					char *src = p;
+					char *q = strchr(src, ' ');
+					if (!q) {
+						printk("\nUsage: decompress <srcfile> <dstfile>\n");
+					} else {
+						*q = '\0';
+						char *dst = q + 1;
+						while (*dst == ' ') dst++;
+						
+						if (*dst == '\0') {
+							printk("\nUsage: decompress <srcfile> <dstfile>\n");
+						} else {
+							int result = decompress_file(src, dst);
+							if (result > 0) {
+								printk("\nFile decompressed successfully: %d bytes\n", result);
+							} else {
+								printk("\nDecompression failed: error %d\n", result);
+							}
+						}
+					}
+				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "clear") == 0)
 				{
 					terminal_initialize(default_font_color, COLOR_BLACK);
 					strcpy(&buffer[strlen(buffer)], "");
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "fw ", 3) == 0)
+				{
+					char *p = buffer + 3;
+					while (*p == ' ') p++;
+
+					if (strncmp(p, "list", 4) == 0) {
+						struct fw_rule rules[MAX_RULES];
+						int num = netsec_list_rules(rules, MAX_RULES);
+						if (num < 0) {
+							printk("\nError listing rules\n");
+						} else {
+							printk("\nFirewall Rules:\n");
+							for (int i = 0; i < num; i++) {
+								struct fw_rule *r = &rules[i];
+								printk("\n%d: %s ", i, 
+									r->type == RULE_ALLOW ? "ALLOW" : "DENY");
+								switch(r->target_type) {
+									case TARGET_ANY:
+										printk("ANY");
+										break;
+									case TARGET_PORT:
+										printk("PORT %u", r->port);
+										break;
+									case TARGET_ADDRESS:
+										printk("IP %u.%u.%u.%u/%u.%u.%u.%u",
+											(r->address >> 24) & 0xFF,
+											(r->address >> 16) & 0xFF,
+											(r->address >> 8) & 0xFF,
+											r->address & 0xFF,
+											(r->mask >> 24) & 0xFF,
+											(r->mask >> 16) & 0xFF,
+											(r->mask >> 8) & 0xFF,
+											r->mask & 0xFF);
+										break;
+								}
+							}
+							printk("\n");
+						}
+					}
+					else if (strncmp(p, "allow ", 6) == 0 || strncmp(p, "deny ", 5) == 0) {
+						int is_allow = (p[0] == 'a');
+						p += is_allow ? 6 : 5;
+						while (*p == ' ') p++;
+
+						struct fw_rule rule;
+						rule.type = is_allow ? RULE_ALLOW : RULE_DENY;
+
+						if (strncmp(p, "port ", 5) == 0) {
+							p += 5;
+							rule.target_type = TARGET_PORT;
+							rule.port = atoi(p);
+							int r = netsec_add_rule(&rule);
+							if (r == 0) {
+								printk("\nAdded rule to %s port %u\n",
+									is_allow ? "allow" : "deny", rule.port);
+							} else {
+								printk("\nFailed to add rule: %d\n", r);
+							}
+						}
+						else if (strncmp(p, "ip ", 3) == 0) {
+							p += 3;
+							rule.target_type = TARGET_ADDRESS;
+							/* Parse IP A.B.C.D */
+							uint32_t addr = 0;
+							for (int i = 0; i < 4; i++) {
+								int val = 0;
+								while (*p >= '0' && *p <= '9') {
+									val = val * 10 + (*p - '0');
+									p++;
+								}
+								addr = (addr << 8) | (val & 0xFF);
+								if (i < 3) {
+									if (*p != '.') goto bad_ip;
+									p++;
+								}
+							}
+							rule.address = addr;
+							rule.mask = 0xFFFFFFFF;  /* Full mask */
+							int r = netsec_add_rule(&rule);
+							if (r == 0) {
+								printk("\nAdded rule to %s IP %u.%u.%u.%u\n",
+									is_allow ? "allow" : "deny",
+									(addr >> 24) & 0xFF,
+									(addr >> 16) & 0xFF,
+									(addr >> 8) & 0xFF,
+									addr & 0xFF);
+							} else {
+								printk("\nFailed to add rule: %d\n", r);
+							}
+							continue;
+						bad_ip:
+							printk("\nInvalid IP address format. Use: A.B.C.D\n");
+						}
+						else {
+							printk("\nUnknown target type. Use: port N or ip A.B.C.D\n");
+						}
+					}
+					else {
+						printk("\nUnknown firewall command\n");
+						printk("Usage:\n");
+						printk("  fw list\n");
+						printk("  fw allow|deny port N\n");
+						printk("  fw allow|deny ip A.B.C.D\n");
+					}
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "datetime") == 0)
 				{
@@ -521,13 +1128,19 @@ int main(void)
 						if (*new == '\0') {
 							printk("\nUsage: mv <oldpath> <newpath>\n");
 						} else {
-							int r = fs_rename(old, new);
-							if (r == FS_OK) printk("\n(mv) renamed %s -> %s\n", old, new);
-							else printk("\n(mv) failed: %d\n", r);
+							char rold[256], rnew[256];
+							if (resolve_path(old, rold, sizeof(rold)) != 0) { printk("\nPath too long\n"); }
+							else if (resolve_path(new, rnew, sizeof(rnew)) != 0) { printk("\nPath too long\n"); }
+							else {
+								int r = fs_rename(rold, rnew);
+								if (r == FS_OK) printk("\n(mv) renamed %s -> %s\n", rold, rnew);
+								else printk("\n(mv) failed: %d\n", r);
+							}
 						}
 					}
 				}
 			}
+
 			else if (strlen(buffer) > 0 && strncmp(buffer, "truncate ", 9) == 0)
 			{
 				char *p = buffer + 9;
@@ -549,64 +1162,74 @@ int main(void)
 							if (*num == '-') { neg = 1; num++; }
 							while (*num >= '0' && *num <= '9') { val = val * 10 + (*num - '0'); num++; }
 							if (neg) val = -val;
-							int r = fs_truncate(path, (size_t)val);
-							if (r == FS_OK) printk("\n(truncate) %s => %d\n", path, val);
-							else printk("\n(truncate) failed: %d\n", r);
+							char rpath[256];
+							if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+							else {
+								int r = fs_truncate(rpath, (size_t)val);
+								if (r == FS_OK) printk("\n(truncate) %s => %d\n", rpath, val);
+								else printk("\n(truncate) failed: %d\n", r);
+							}
 						}
 					}
 				}
 			}
 			else if (strlen(buffer) > 0 && strncmp(buffer, "rmdir ", 6) == 0)
 			{
-				const char *path = buffer + 6;
-				while (*path == ' ') path++;
-				if (*path == '\0') {
-					printk("\nUsage: rmdir <path>\n");
-				} else {
-					int r = fs_rmdir(path);
-					if (r == FS_OK) printk("\n(rmdir) removed %s\n", path);
+				char *path = buffer + 6; while (*path == ' ') path++;
+				if (*path == '\0') { printk("\nUsage: rmdir <path>\n"); }
+				else {
+					char rpath[256];
+					if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+					else {
+						int r = fs_rmdir(rpath);
+						if (r == FS_OK) printk("\n(rmdir) removed %s\n", rpath);
 					else printk("\n(rmdir) failed: %d\n", r);
+					}
 				}
 			}
 				else if (strlen(buffer) > 0 && strncmp(buffer, "cat ", 4) == 0)
 				{
 					/* cat <path> - print file contents from embedded initrd */
-					const char *path = buffer + 4;
+					char *path = buffer + 4;
 					/* trim leading spaces */
 					while (*path == ' ') path++;
 					if (*path == '\0') {
 						printk("\nUsage: cat <path>\n");
 					} else {
-						fs_fd_t fd = fs_open(path, FS_O_RDONLY);
-						if (fd < 0) {
-							printk("\n(cat) %s: not found\n", path);
-						} else {
-							char fbuf[256];
-							int r;
-							int line_count = 0;
-							while ((r = fs_read(fd, fbuf, sizeof(fbuf)-1)) > 0) {
-								fbuf[r] = '\0';
-								/* print and count newlines for pagination */
-								for (int i = 0; i < r; ++i) {
-									char ch = fbuf[i];
-									char s[2] = {ch, '\0'};
-									printk("%s", s);
-									if (ch == '\n') {
-										line_count++;
-										if (line_count >= 20) {
-											printk("--More-- (space to continue, q to quit)");
-											if (!pager_wait_key()) { r = -1; break; }
-											line_count = 0;
-											printk("\n");
+						char rpath[256];
+						if (resolve_path(path, rpath, sizeof(rpath)) != 0) { printk("\nPath too long\n"); }
+						else {
+							fs_fd_t fd = fs_open(rpath, FS_O_RDONLY);
+							if (fd < 0) {
+								printk("\n(cat) %s: not found\n", rpath);
+							} else {
+								char fbuf[256];
+								int r;
+								int line_count = 0;
+								while ((r = fs_read(fd, fbuf, sizeof(fbuf)-1)) > 0) {
+									fbuf[r] = '\0';
+									/* print and count newlines for pagination */
+									for (int i = 0; i < r; ++i) {
+										char ch = fbuf[i];
+										char s[2] = {ch, '\0'};
+										printk("%s", s);
+										if (ch == '\n') {
+											line_count++;
+											if (line_count >= 20) {
+												printk("--More-- (space to continue, q to quit)");
+												if (!pager_wait_key()) { r = -1; break; }
+												line_count = 0;
+												printk("\n");
+											}
 										}
 									}
 								}
+								if (r < 0) {
+									printk("\n(cat) read error or cancelled\n");
+								}
+								fs_close(fd);
+								printk("\n");
 							}
-							if (r < 0) {
-								printk("\n(cat) read error or cancelled\n");
-							}
-							fs_close(fd);
-							printk("\n");
 						}
 					}
 				}
@@ -615,11 +1238,12 @@ int main(void)
 			}
 			else if (byte == BACKSPACE)
 			{
-				char c = normalmap[byte];
-				char *s;
-				s = ctos(s, c);
-				printk("%s", s);
-				buffer[strlen(buffer) - 1] = '\0';
+				if (strlen(buffer) > 0) {
+					char c = normalmap[byte];
+					char backspace_str[2] = {c, '\0'};
+					printk("%s", backspace_str);
+					buffer[strlen(buffer) - 1] = '\0';
+				}
 			}
 			else
 			{
@@ -640,8 +1264,7 @@ int main(void)
 				{
 					c = capslockmap[byte];
 				}
-				else if (shift)
-				{
+				else if (shift){
 					c = shiftmap[byte];
 					shift = false;
 				}
@@ -652,7 +1275,11 @@ int main(void)
 				char *s;
 				s = ctos(s, c);
 				printk("%s", s);
-				strcpy(&buffer[strlen(buffer)], s);
+				size_t curr_len = strlen(buffer);
+				if (curr_len + 2 < BUFFER_SIZE) { // +2 for char and null terminator
+					strncpy(&buffer[curr_len], s, BUFFER_SIZE - curr_len - 1);
+					buffer[BUFFER_SIZE-1] = '\0';
+				}
 				if (byte == 0x2A || byte == 0x36)
 				{
 					shift = true;
