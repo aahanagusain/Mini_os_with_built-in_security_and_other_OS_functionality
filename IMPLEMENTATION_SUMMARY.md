@@ -359,8 +359,8 @@ Written to 'pegasus.iso' completed successfully
 
 ## Performance Characteristics
 
-| Operation | Time Complexity | Space |
-|-----------|-----------------|-------|
+| Operation   | Time Complexity | Space |
+|-----------  |-----------------|-------|
 | User lookup | O(n) | 32n bytes |
 | Firewall rule check | O(n) | 12n bytes |
 | File creation | O(1) | ~100 bytes |
