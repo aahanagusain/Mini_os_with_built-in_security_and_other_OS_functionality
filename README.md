@@ -13,6 +13,8 @@ Requirements:-
 
 make initrd data file:
     python3 tools/mkinitrd.py fsroot > src/initrd_data.c
+make paswd:
+    python3 tools/mkpasswd.py root
 
 Make Iso file:
     make pegasus.iso
