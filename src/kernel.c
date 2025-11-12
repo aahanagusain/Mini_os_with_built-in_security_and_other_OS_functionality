@@ -19,6 +19,8 @@
 #include "../include/user.h"
 #include "../include/gui.h"
 #include "../include/netsec.h"
+#include "../include/encrypt.h"
+#include "../include/compress.h"
 
 #define DEBUG false
 
@@ -323,6 +325,11 @@ int main(void)
 					printk("\n\t mkdir <path>       - \tcreate directory");
 					printk("\n\t echo <text> > <f>  - \twrite text to file");
 					printk("\n\t edit <path>        - \tview file contents");
+					printk("\n\n\tEncryption/Compression:\n");
+					printk("\n\t encrypt <s> <d> <k>- \tencrypt file (XOR cipher)");
+					printk("\n\t decrypt <s> <d> <k>- \tdecrypt file (XOR cipher)");
+					printk("\n\t compress <s> <d>  - \tcompress file (RLE)");
+					printk("\n\t decompress <s> <d>- \tdecompress file (RLE)");
 					printk("\n");
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "about") == 0)
@@ -704,6 +711,132 @@ int main(void)
 						printk("\nExecuting as root: %s\n", cmd);
 						/* The command would be processed in the next iteration */
 						/* For now, just acknowledge */
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "encrypt ", 8) == 0)
+				{
+					char *p = buffer + 8;
+					while (*p == ' ') p++;
+					
+					/* Parse: encrypt <srcfile> <dstfile> <key> */
+					char *src = p;
+					char *q1 = strchr(src, ' ');
+					if (!q1) {
+						printk("\nUsage: encrypt <srcfile> <dstfile> <key>\n");
+					} else {
+						*q1 = '\0';
+						char *dst = q1 + 1;
+						while (*dst == ' ') dst++;
+						
+						char *q2 = strchr(dst, ' ');
+						if (!q2) {
+							printk("\nUsage: encrypt <srcfile> <dstfile> <key>\n");
+						} else {
+							*q2 = '\0';
+							char *key = q2 + 1;
+							while (*key == ' ') key++;
+							
+							if (*key == '\0') {
+								printk("\nUsage: encrypt <srcfile> <dstfile> <key>\n");
+							} else {
+								int result = encrypt_file(src, dst, key);
+								if (result > 0) {
+									printk("\nFile encrypted successfully: %d bytes\n", result);
+								} else {
+									printk("\nEncryption failed: error %d\n", result);
+								}
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "decrypt ", 8) == 0)
+				{
+					char *p = buffer + 8;
+					while (*p == ' ') p++;
+					
+					/* Parse: decrypt <srcfile> <dstfile> <key> */
+					char *src = p;
+					char *q1 = strchr(src, ' ');
+					if (!q1) {
+						printk("\nUsage: decrypt <srcfile> <dstfile> <key>\n");
+					} else {
+						*q1 = '\0';
+						char *dst = q1 + 1;
+						while (*dst == ' ') dst++;
+						
+						char *q2 = strchr(dst, ' ');
+						if (!q2) {
+							printk("\nUsage: decrypt <srcfile> <dstfile> <key>\n");
+						} else {
+							*q2 = '\0';
+							char *key = q2 + 1;
+							while (*key == ' ') key++;
+							
+							if (*key == '\0') {
+								printk("\nUsage: decrypt <srcfile> <dstfile> <key>\n");
+							} else {
+								int result = decrypt_file(src, dst, key);
+								if (result > 0) {
+									printk("\nFile decrypted successfully: %d bytes\n", result);
+								} else {
+									printk("\nDecryption failed: error %d\n", result);
+								}
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "compress ", 9) == 0)
+				{
+					char *p = buffer + 9;
+					while (*p == ' ') p++;
+					
+					/* Parse: compress <srcfile> <dstfile> */
+					char *src = p;
+					char *q = strchr(src, ' ');
+					if (!q) {
+						printk("\nUsage: compress <srcfile> <dstfile>\n");
+					} else {
+						*q = '\0';
+						char *dst = q + 1;
+						while (*dst == ' ') dst++;
+						
+						if (*dst == '\0') {
+							printk("\nUsage: compress <srcfile> <dstfile>\n");
+						} else {
+							int result = compress_file(src, dst);
+							if (result > 0) {
+								printk("\nFile compressed successfully: %d bytes\n", result);
+							} else {
+								printk("\nCompression failed: error %d\n", result);
+							}
+						}
+					}
+				}
+				else if (strlen(buffer) > 0 && strncmp(buffer, "decompress ", 11) == 0)
+				{
+					char *p = buffer + 11;
+					while (*p == ' ') p++;
+					
+					/* Parse: decompress <srcfile> <dstfile> */
+					char *src = p;
+					char *q = strchr(src, ' ');
+					if (!q) {
+						printk("\nUsage: decompress <srcfile> <dstfile>\n");
+					} else {
+						*q = '\0';
+						char *dst = q + 1;
+						while (*dst == ' ') dst++;
+						
+						if (*dst == '\0') {
+							printk("\nUsage: decompress <srcfile> <dstfile>\n");
+						} else {
+							int result = decompress_file(src, dst);
+							if (result > 0) {
+								printk("\nFile decompressed successfully: %d bytes\n", result);
+							} else {
+								printk("\nDecompression failed: error %d\n", result);
+							}
+						}
 					}
 				}
 				else if (strlen(buffer) > 0 && strcmp(buffer, "clear") == 0)
